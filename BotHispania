@@ -1,0 +1,2398 @@
+// ==UserScript==
+// @name			Hispania: BotHispania
+// @namespace		BotHispania
+// @description		Automatizacion del juego, sincronizacion con la web y otras funciones
+// @author			chetorz
+// @icon        
+// @include			http://*.hispaniaeljuego.com/game/*
+// @require			http://code.jquery.com/jquery-2.0.3.min.js
+// @resource logo	http://i58.tinypic.com/5pkldw.png
+// ==/UserScript==
+
+////////////////////
+// Parametros Script
+////////////////////
+GM_log("<<<<< EJECUTANDO TRIFORCE >>>>>");
+var version = "9";
+
+// Detectar Server
+var server = document.location.href.match(/\/\/[a-z]{1,}\.hispaniaeljuego/gim)[0];
+var server = server.replace(/(\.hispaniaeljuego|\/\/)/gim,""); 
+
+//IP del servidor PHP
+var ip = "http://127.0.0.1/triforce_dev/";
+var ip = "http://triforce.cc/";
+		
+////////////////		
+//	ACTUALIZADOR
+////////////////
+$(window).load(function(){
+	var num_aleatorio_cache = Math.floor(Math.random()*99999999999999999999);
+	GM_xmlhttpRequest({
+		method: "GET",
+		url: ip + "consulta-script.php?check_version=1&nocache="+num_aleatorio_cache,
+		synchronous: false,
+		timeout: 500, //ms
+		onerror: function(response) {
+			GM_setValue(server+"_conexion","fail");
+			GM_log("TRIFORCE: NO HAY CONEXION CON EL SERVIDOR "+ip);
+		},
+		onload: function(response) {
+			var new_version = response.responseText;
+			if(version != new_version && new_version.search(/^[0-9a-z]{1,3}$/gim) != -1){
+				// Actualizacion disponible
+				texto="<center><br><br><h1><font color=black>El Triforce se encuentra desactualizado, tienes dos opciones:</h1><br><br>";
+				texto+="<h2>1) <a href='"+ip+"inc/triforce_v"+new_version+".user.js'>Actualiza el script</a> y <a href='#' onclick='location.reload()'>recarga la pagina</a><br><br>";
+				texto+="2) Deshabilita el mono y <a href='#' onclick='location.reload()'>recarga la pagina</a>:<br><br><img src='"+ip+"/imagenes/deshabilitarGM.png'</img></font></h2></center>";
+				$('body').html(texto).css("background-color","white");
+			}else if(new_version.length>3){
+				// La respuesta no es correcta
+				GM_setValue(server+"_conexion","fail");
+				GM_log("TRIFORCE: NO HAY CONEXION CON EL SERVIDOR");
+			}else{
+				// Actualizacion realizada
+				GM_setValue(server+"_conexion","ok");
+				//NOTIFICADOR DE CAMBIOS
+				if(GM_getValue("version") != version){
+					GM_openInTab(ip + "inc/script-changelog.php");
+					GM_setValue("version", version);
+				}
+			}
+		}
+	});
+});
+
+////////////////////////
+//	FUNCIONES GENERALES
+////////////////////////
+
+// Ciudad actual
+function city_actual(){
+	var city = $("#cities option").filter(function(){
+		return $(this).attr("selected");
+	}).text();
+	
+	city = city.replace(/ \([0-9]{1,3},[0-9]{1,3}\)/gim, "");
+	return city;
+}
+
+// Coordenadas actuales
+function coors_actuales(){
+	var city = $("#cities option").filter(function(){
+		return $(this).attr("selected");
+	}).text();
+	
+	var x_ori = city.match(/\([0-9]{1,3},/gim)[0].replace(/[\(]{1,1}|[\,]{1,1}/gi, "");
+	var y_ori = city.match(/\,[0-9]{1,3}\)/gim)[0].replace(/[\)]{1,1}|[\,]{1,1}/gi, "");
+	var coors = new Array(x_ori, y_ori);
+	return coors;
+}
+
+
+//	Segundos a horas
+function seg_a_hora(segundos){
+	//horas
+	if(segundos.toString().search(/[0-9]{1,}/)==-1){
+		return false;
+	}
+	hora=parseInt(parseInt(segundos)/3600).toString().match(/[0-9]{1,2}/)[0];
+	if(hora.toString().length<2){
+		hora="0"+hora;
+	}
+	//min
+	min=parseInt(parseInt(segundos)/60).toString().match(/[0-9]{1,}/)[0];
+	while(min>59){
+		min=min-60;
+	}
+	if(min.toString().length<2){
+		min="0"+min;
+	}
+	while(segundos>59){
+		segundos=segundos-60;
+	}
+	segundos=segundos.toString().match(/[0-9]{1,2}/)[0];
+	if(segundos.toString().length<2){
+		segundos="0"+segundos;
+	}
+	return hora+":"+min+":"+segundos;
+}
+
+
+//	Bando del jugador
+function bando(){
+	if($("div#header.header_ibe").length == 1){
+		return "hispano";
+	}else if($("div#header.header_ibe").length == 0){
+		return "romano";
+	}else{
+		GM_log("ERROR BANDO");
+	}
+}
+
+
+// Dia o Noche
+function dia_noche(){
+	//TODO revisar atardecer, noche
+	estado = $("#daynight").find("img").attr("title");
+	if(estado.search(/(Luna Nueva|Luna Creciente|Luna Menguante|Luna Llena)/gim) != -1){
+		return "noche";
+	}else if(estado.search(/(Mañana|Día|Atardecer)/gim) != -1){
+		return "dia";
+	}else{
+		GM_log("ERROR dia_noche()");
+	}
+}
+
+//	Ordenar arrays
+function sortfunc(a, b){
+	return a - b;
+}
+
+//	Auto refresco
+function auto_refresh(motivo){
+	GM_log("Ejecucion Auto Refresco: " + motivo);
+	location.reload(false);
+}
+
+//	Caluclo de tiempos
+function calculo_tiempos(xob,yob,modo){	
+	var texto=document.getElementsByTagName("body")[0].innerHTML;
+	var poblado = texto.match(/\([0-9]{1,},[0-9]{1,}\)" value="[0-9]{1,}" SELECTED/gim);
+	
+	//COOR ORIGEN
+	var x = coors_actuales()[0];
+	var y = coors_actuales()[1];
+	
+	//COOR OBJETIVO
+	if(modo==1){
+		var xob2=texto.match(/game\/map\/x\/[0-9]{1,}\/y\/[0-9]{1,}/gim);
+		var xob=xob2[0].match(/x\/[0-9]{1,}/gim);
+		var xob=xob[0].replace(/x\//gim,"");
+		var yob=xob2[0].match(/y\/[0-9]{1,}/gim);
+		var yob=yob[0].replace(/y\//gim,"");
+	}
+	
+	x = xob - x;
+	y = yob - y;
+	x2 = x * x;
+	y2 = y * y;
+	z = x2 + y2;
+	dist = Math.sqrt(z);
+	
+	texto="<b>Tiempos:</b><br>";
+	
+	// BANDO
+	if(bando() == "hispano"){
+		var unidades = new Array('H-Guerrero Cantabro','H-Espia','H-Guerrero Turdetano','H-Jinete lusitano','H-Jinete Edetano','H-Jinete Celtibero','H-Hondero Balear','H-L de Soliferrums','H-Ariete','H-Catapulta','H-Comerciante','H-Carro Colono');
+		
+		for(i=0;i<unidades.length;i++){
+			switch (i){
+				// t = tiempo de unidad por casilla en segundos
+				case 0:	t = 240;	break;
+				case 1:	t = 97;	break;
+				case 2:	t = 300;	break;
+				case 3:	t = 138;	break;
+				case 4:	t = 171;	break;
+				case 5:	t = "156,4";	break;
+				case 6:	t = 276;	break;
+				case 7:	t = 225;	break;
+				case 8:	t = 400;	break;
+				case 9:	t = 400;	break;
+				case 10:	t = 88;	break;
+				case 11:	t = 360;	break;
+			}
+			
+			var r3 = dist * t;
+			texto += unidades[i]+": "+seg_a_hora(r3)+"<br>";
+		}
+	}else{
+		var unidades = new Array('R-Principe','R-Espia','R-Triario','R-Mercenario Numida','R-Aliado latino','R-Equite Romano','R-Velite','R-Arquero Cretense','R-Ballesta','R-Onager','R-Comerciante','R-Carro Colonos');
+
+		for(i=0;i<unidades.length;i++){
+			switch (i){
+				// t = tiempo de unidad por casilla en segundos
+				case 0:	t = 300;	break;
+				case 1:	t = 100;	break;
+				case 2:	t = 360;	break;
+				case 3:	t = 138;	break;
+				case 4:	t = 171;	break;
+				case 5:	t = 150;	break;
+				case 6:	t = 300;	break;
+				case 7:	t = 257;	break;
+				case 8:	t = 450;	break;
+				case 9:	t = 450;	break;
+				case 10:	t = 124;	break;
+				case 11:	t = 360;	break;
+			}
+	
+			var r3 = dist * t;
+			texto += unidades[i]+": "+seg_a_hora(r3)+"<br>";
+		}
+	}
+	
+	if(modo==2){
+		$('#cuadro_tiempos').html(texto);
+	}else{
+		$('div.kk').after("<table style='margin-left:25px;'><tr><td id='tiempos'>" + texto + "</td></tr></table>");
+		$('div.kk').find('br').last().remove();
+		$('div.kk').find('br').last().remove();
+	}
+}
+
+
+////////////////////////
+// Auto Refresco Hispania
+if(document.location.href=="http://"+server+".hispaniaeljuego.com/game/counselors/diplomacy/inbox/" || document.location.href=="http://"+server+".hispaniaeljuego.com/game/region/city/"){
+	setTimeout(function(){ auto_refresh("Diplomacia/Ciudad"); },60000);
+}
+
+
+////////////////
+//JUGADOR ACTUAL
+function jugador_actual(){
+	jugador=$("a.link[href='/game/ranking/']:last").text();
+	if(jugador != "Jugadores"){
+		return jugador;
+	}
+}
+/*
+if(document.location.href=="http://"+server+".hispaniaeljuego.com/game/region/city/"){
+	GM_xmlhttpRequest({
+		method: "GET",
+		url: ip + "consultascript.php?server="+server+"&jugadorscript=1&jugador="+jugador_actual()
+	});
+}*/
+
+//////////////
+// Hora Actual
+function hora_actual(modo){
+	tiempo=$('span').filter(function(){
+		return $(this).attr("style")=="float:right;margin-left:15px;color:#D86E1A;";
+	}).text();
+	if(modo==1){
+		tiempo=tiempo.match(/[0-9]{2,2}/gim);
+		hora_actual2=parseInt(tiempo[0]*60)+parseInt(tiempo[1]);
+	}
+	return hora_actual2;
+}
+
+////////////////////////////
+//Calculo de tiempo restante
+function tiempo_restante(modo, dia, hora, min){
+	//tiempo restante
+	restante = parseInt(hora*60)+parseInt(min);
+	
+	//suma hora actual en seg y tiempo restante en seg
+	hora_final=parseInt(hora_actual("1"))+parseInt(restante);
+	
+	//dia
+	dia_temp=hora_final;
+	dia=parseInt(dia);
+	while(dia_temp>1440){
+		dia_temp-=1440;
+		dia++;
+	}
+	
+	//horas
+	hora=(dia_temp/60).toString().match(/[0-9]{1,}/)[0];
+	if(hora.toString().length<2){
+		hora="0"+hora;
+	}
+	
+	//min
+	min=dia_temp;
+	while(min>59){
+		min=min-60;
+	}
+	if(min.toString().length<2){
+		min="0"+min;
+	}
+	
+	var nombres_dias = new Array("Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb");
+	var dia_semana = new Date().getDay();
+
+	if(dia_semana+dia>6){
+		n_dia=dia_semana+dia-7;
+	}else{
+		n_dia=dia_semana+dia;
+	}
+	return nombres_dias[n_dia]+" "+hora+":"+min;
+}
+
+/////////////////
+//FORMATO NUMEROS
+function number_format(numero){
+	numero=numero.toString();
+	for(i=3;i<numero.length;i++){
+		part1=numero.slice(0,-i);
+		part2=numero.slice(-i);
+		numero=part1+"."+part2;
+		i=i+3;
+	}
+	return numero;
+}
+
+////////////////////
+// Bando del jugador
+function jugador_bando(){
+	if(document.getElementsByTagName("body")[0].innerHTML.search("header_ibe") != -1){
+		bando="hispano";
+	}else{
+		bando="romano";
+	}
+	return bando;
+}
+
+
+///////////
+// GM_XHR()
+function GM_XHR() {
+    this.type = null;
+    this.url = null;
+    this.async = null;
+    this.username = null;
+    this.password = null;
+    this.status = null;
+    this.headers = {};
+    this.readyState = null;
+
+    this.abort = function() {
+        this.readyState = 0;
+    };
+
+    this.getAllResponseHeaders = function(name) {
+      if (this.readyState!=4) return "";
+      return this.responseHeaders;
+    };
+
+    this.getResponseHeader = function(name) {
+      var regexp = new RegExp('^'+name+': (.*)$','im');
+      var match = regexp.exec(this.responseHeaders);
+      if (match) { return match[1]; }
+      return '';
+    };
+
+    this.open = function(type, url, async, username, password) {
+        this.type = type ? type : null;
+        this.url = url ? url : null;
+        this.async = async ? async : null;
+        this.username = username ? username : null;
+        this.password = password ? password : null;
+        this.readyState = 1;
+    };
+    
+    this.setRequestHeader = function(name, value) {
+        this.headers[name] = value;
+    };
+
+    this.send = function(data) {
+        this.data = data;
+        var that = this;
+       GM_xmlhttpRequest({
+            method: this.type,
+            url: this.url,
+            headers: this.headers,
+            data: this.data,
+            onload: function(rsp) {
+                for (var k in rsp) {
+                    that[k] = rsp[k];
+                }
+            },
+            onerror: function(rsp) {
+                for (var k in rsp) {
+                    that[k] = rsp[k];
+                }
+            }
+        });
+	};
+};
+
+////////////////
+//ENVIO JUGADOR
+function player_submit(info){
+	var text = info;
+	text = text.replace(/[&]{1,}/gim, "");
+	text = text.replace(/["]{1,}/gim, "");
+	text = text.replace(/[;]{1,}/gim, "");
+	
+	/*GM_xmlhttpRequest({
+		method: "POST",
+		url: ip + "player-submit.php",
+		data: "info2=" + text,
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded"
+		},
+		synchronous: "false",
+		onload: function(response) {
+			//if (response.responseText) {
+
+			GM_log([
+			  response.status,
+			  response.statusText,
+			  response.readyState,
+			  response.responseHeaders,
+			  response.responseText,
+			  response.finalUrl,
+			  response.responseXML
+			].join("\n"));
+			//}
+		  }
+	});*/
+	
+   $.ajax({
+		url: ip + "player-submit.php",
+     xhr: function(){return new GM_XHR();},
+     type: 'POST',
+		data: { info2: text }
+	});
+}
+
+//////////////////////
+// TIPO EVENTO MILITAR
+function evento_militar(){
+	evento=$('div.lf15').eq(0).children('h2').text();
+	if(evento.search(/ ha atacado a /gim)!=-1){
+		var tipo ="ataque";
+	}else if(evento.search(/ ha espiado a /gim)!=-1){
+		var tipo ="espionaje";
+	}else if(evento.search(/Refuerzas |Envías refuerzos desde | envía refuerzos a | ha devuelto tus refuerzos a /gim)!=-1){
+		var tipo ="refuerzo";
+	}else if(evento.search(/conquista/gim)!=-1){
+		var tipo ="conquista";
+	}else{
+		var tipo = null;
+	}
+	return tipo;
+}
+
+
+
+/////////////////////
+// Detectar error 404
+$(document).ready(function(){
+	if($("body").text().search(/404 Not Found/gim) != -1){
+		GM_log("################## Respuesta 404 del servidor, recargando...");
+		setTimeout(function(){	location.href = location.href.match(/[0-9a-z\.\/:]{5,}/gim)[0];}, 10000);
+	}
+});
+
+
+///////////////////////////
+//Consumo cereal en sidebar
+if($("#sidebar_content span.res_prod.KO").text().length > 0){
+	consumo = $("#sidebar_content span.res_prod.KO").text().match(/[0-9\.]{1,}/gim)[0].replace(/(-|\.)/gim, "");
+	almacenado = $("#res_2").text().match(/[0-9\.]{1,}/gim)[0].replace(/(-|\.)/gim, "");
+	
+	restante = almacenado / consumo;
+	restante = restante.toString().match(/[0-9]{1,}/gim)[0];
+	
+	$("#sidebar_content #player").eq(1).find("td").eq(5).html("<span style='color:red;'>("+restante+" horas)</span>");
+	
+}
+
+
+///////////////////
+//script de recarga
+$(document).ready(function(){
+	var segundos = $('script').filter(function(){
+		return $(this).html().search(/var GI/gim)!=-1;
+	}).html().match(/"refresh_time": [0-9]{1,},/)[0].match(/[0-9]{1,}/)[0];
+	
+	$('#sidebar_content').append("<div id='refresco'><b>Recarga en: "+seg_a_hora(segundos)+"</b></div>");
+	var i = 1;
+	var tiempo_refresco = function () {
+		$('#refresco').html("<b>Recarga en: "+seg_a_hora(segundos-i)+"</b></div>");
+		i++;
+	};
+	window.setInterval(tiempo_refresco, 1000);
+});
+
+
+//////////////////
+//ENVIO ESPIONAJES
+//////////////////
+var patron1 = /game\/counselors\/military\/detail/;
+var patron2 = /game\/alliances\/attacks\/detail/;
+if(document.location.href.search(patron1) != -1 || document.location.href.search(patron2) != -1){
+	$(window).load(function(){
+		//Si es un ataque paramos el script
+		if($("#GA_CNT_M").text().search(/ ha espiado a/gim) != -1){
+			//OBTENEMOS DATOS DE LA WEB
+			var text = document.getElementsByTagName("body")[0].innerHTML;
+			text = text.replace(/[&]{1,}/gi, "");
+			text = text.replace(/["]{1,}/gi, "");
+			text = text.replace(/[;]{1,}/gi, "");
+			var id = document.location.href.replace(/[a-z\.\:\/]{1,}/gi, "");
+			
+			//Enviamos el espionaje
+			/*GM_xmlhttpRequest({
+				method: "POST",
+				url: ip + "espionajes-submit.php",
+				data: "info2=" + text + "&id=" + id,
+				headers: {
+					"Content-Type": "application/x-www-form-urlencoded"
+				},
+				synchronous: "false",
+				onload: function(response) {
+					//alert(response.responseText);
+					if(response.responseText.length > 0){
+						GM_log(response.responseText);
+					}
+				}
+			});  */ 
+			
+			$.ajax({
+				url: ip + "espionajes-submit.php",
+				 xhr: function(){return new GM_XHR();},
+				 type: 'POST',
+					data: { info2: text, id: id }
+				});
+						
+			// Capacidad escondites
+			var capacidad_escondites = 0;
+			if($("#GA_CNT_M").find("table.rk").length > 0){
+				$("#GA_CNT_M").find("table.rk tr").filter(function(){
+					return $(this).find("td").eq(0).text() == "Escondite";
+				}).each(function(){
+					var nivel = $(this).find("td").eq(1).text();
+					switch(nivel){
+						case "1": capacidad_escondites += 150; break;
+						case "2": capacidad_escondites += 200; break;
+						case "3": capacidad_escondites += 300; break;
+						case "4": capacidad_escondites += 420; break;
+						case "5": capacidad_escondites += 600; break;
+						case "6": capacidad_escondites += 850; break;
+						case "7": capacidad_escondites += 1200; break;
+						case "8": capacidad_escondites += 1700; break;
+						case "9": capacidad_escondites += 2300; break;
+						case "10": capacidad_escondites += 3000; break;
+					}
+				});
+				
+				var porcentaje = 1;
+				// Romanos roban 20% mas
+				if(bando()=="romano")	porcentaje = porcentaje - 0.20;
+				
+				// De noche se escuende un 7% mas
+				if(dia_noche()=="noche")	porcentaje = porcentaje + 0.07;
+				
+				capacidad_escondites = (capacidad_escondites * porcentaje).toString().match(/[0-9]{1,}/gim)[0];
+				if(capacidad_escondites < 0) capacidad_escondites = 0; 
+				
+			}
+			$("#GA_CNT_M").find("table").filter(function(){
+				return $(this).find("img.res_ico").length > 0;
+			}).after("<br><div id='cap_escondites' style='font-size: 16px;'><b>Escondites:</b> "+number_format(capacidad_escondites)+" unidades de cada</div>");
+			
+			
+			
+			// Recursos
+			var recursos = new Array();
+			$('.lf15').find("td[style='padding-right:15px;font-size:16px;']").each(function(index){
+				recursos[index] = $(this).text();
+			});
+			
+			
+			// Recursos saqueables
+			var saqueables = new Array();
+			var saqueables_total = 0;
+			for(i=0;i < recursos.length; i++){
+				saqueables[i] = recursos[i] - capacidad_escondites;
+				if(saqueables[i] < 0)	saqueables[i] = 0;
+				saqueables_total += saqueables[i];
+			}
+			
+			texto = "<b>Saqueables:</b>";
+			texto += " <img style='display:inline; vertical-align: text-bottom;' src='http://static.hispaniaeljuego.com/0_96/img/misc/mad.gif' title='Madera'>"+number_format(saqueables[0]);
+			texto += " <img style='display:inline; vertical-align: text-bottom;' src='http://static.hispaniaeljuego.com/0_96/img/misc/cer.gif' title='Cereal'>"+number_format(saqueables[1]);
+			texto += " <img style='display:inline; vertical-align: text-bottom;' src='http://static.hispaniaeljuego.com/0_96/img/misc/pie.gif' title='Piedra'>"+number_format(saqueables[2]);
+			texto += " <img style='display:inline; vertical-align: text-bottom;' src='http://static.hispaniaeljuego.com/0_96/img/misc/min.gif' title='Hierro'>"+number_format(saqueables[3]);
+			texto += " (Total "+number_format(saqueables_total)+" unidades)";
+			
+			$("#cap_escondites").after("<div id='saqueables' style='font-size: 16px;'>"+texto+"</div>");
+			
+			// Formatear cantidades recursos
+			$("#GA_CNT_M").find("table").filter(function(){
+				return $(this).find("img.res_ico").length > 0;
+			}).find("b").each(function(){
+				var cantidad = $(this).text().match(/[0-9]{1,}/gim);
+				$(this).text(number_format(cantidad));
+			});
+		
+		}
+	});
+}
+	
+/////////////////////////////////////
+//CUENTA TROPAS EN INFORMES MILITARES
+/////////////////////////////////////
+if(location.href.search(/\/detail\/[0-9]{2,}\/$/gim) != -1){
+
+	//refuerzo
+	if(evento_militar()=="refuerzo"){
+		unidades=$('div.kk3').eq(1).find("div.UNT_inf,div.UNT_cab,div.UNT_lan,div.UNT_maq")
+			.filter(function(){	return $(this).text().search(/-/gim)==-1;});
+		unidades_total=0;
+		for(i=0;i<unidades.length;i++){
+			unidades_total=parseInt(unidades_total)+parseInt($(unidades).eq(i).text().replace(/[\.]{1,}/gim,""));
+		}
+		$('div.kk3').eq(1).append("<br><b>Total unidades:</b> "+number_format(unidades_total)+"<br>");
+	}
+	
+	//espionaje
+	if(evento_militar()=="espionaje"){
+		poblados=$('div.lf15').eq(1).find('div.kk3');
+		unidades_defensor_total=0;
+		for(i2=0;i2<=poblados.length;i2++){
+			unidades=$(poblados).eq(i2).find("div.UNT_inf,div.UNT_cab,div.UNT_lan,div.UNT_maq")
+				.filter(function(){	return $(this).text().search(/-/gim)==-1;});
+				
+			unidades_total=0;
+			for(i=0;i<unidades.length;i++){
+				unidades_total=parseInt(unidades_total)+parseInt($(unidades).eq(i).text().replace(/[\.]{1,}/gim,""));
+			}
+			unidades_defensor_total+=unidades_total;
+			$(poblados).eq(i2).append("<br><b>Total unidades:</b> "+number_format(unidades_total)+"<br>");
+			
+			if(i2+1==poblados.length && poblados.length!=1){
+				$(poblados).eq(i2).append("<br><b>Total unidades defensoras:</b> "+number_format(unidades_defensor_total)+"<br>");
+			}
+		}
+	
+	}
+	
+	//ataque
+	if(evento_militar()=="ataque"){
+		poblados=$('div.kk3');
+		unidades_defensor_total=0;
+		unidades_defensor_muertas_total=0;
+		for(i2=1;i2<=poblados.length;i2++){
+			//todas las unidades por separado
+			unidades=$('div.kk3').eq(i2).find("div.UNT_inf,div.UNT_cab,div.UNT_lan,div.UNT_maq")
+				.filter(function(){
+					return $(this).text().search(/-/gim)==-1;
+				});
+			
+			//todas las unidades sumadas
+			unidades_total=0;
+			for(i=0;i<unidades.length;i++){
+				unidades_total=parseInt(unidades_total)+parseInt($(unidades).eq(i).text().replace(/[\.]{1,}/gim,""));
+			}
+
+			//todas las unidades muertas por separado
+			unidades_m=$('div.kk3').eq(i2).find("div.UNT_inf,div.UNT_cab,div.UNT_lan,div.UNT_maq")
+				.filter(function(){
+					return $(this).text().search(/-/gim)!=-1;
+				});
+				
+			//todas las unidades muertas juntas
+			unidades_total_muertas=0;
+			for(i=0;i<unidades_m.length;i++){
+				unidades_total_muertas=parseInt(unidades_total_muertas)+parseInt($(unidades_m).eq(i).text().replace(/[\.-]{1,}/gim,""));
+			}	
+			
+			if(i2==1){
+				unidades_atacantes_total=unidades_total;
+				unidades_atacantes_muertas_total=unidades_total_muertas;
+				$('div.kk3').eq(i2).append("<br><b>Total unidades atacante:</b> "+number_format(unidades_total)+"<br>");
+				$('div.kk3').eq(i2).append("<b>Unidades muertas atacante:</b> "+number_format(unidades_total_muertas));
+			}else{
+				$('div.kk3').eq(i2).append("<br><b>Total unidades defensor:</b> "+number_format(unidades_total)+"<br>");
+				$('div.kk3').eq(i2).append("<b>Unidades muertas defensor:</b> "+number_format(unidades_total_muertas));
+			}
+			if(i2>1){
+				unidades_defensor_total+=unidades_total;
+				unidades_defensor_muertas_total+=unidades_total_muertas;
+			}
+			
+			if(unidades_total_muertas>0){
+				relacion=(unidades_total_muertas/unidades_total)*100;
+			$('div.kk3').eq(i2).append(" ("+relacion.toString().match(/[0-9]{1,3}/)+"%)");
+			}else{
+				$('div.kk3').eq(i2).append(" (0%)");
+			}
+			
+			//si hay mas de un defensor
+			if(i2+1==poblados.length && poblados.length>3){
+				texto="<br><br><b>ATACANTE: </b><br>";
+				texto+="<b>Unidades:</b> "+number_format(unidades_atacantes_total)+"<br>";
+				texto+="<b>Unidades muertas:</b> "+number_format(unidades_atacantes_muertas_total);
+				
+				if(unidades_atacantes_muertas_total>0){
+					relacion=(unidades_atacantes_muertas_total/unidades_atacantes_total)*100;
+					texto+=" ("+relacion.toString().match(/[0-9]{1,3}/)+"%)<br>";
+				}else{
+					texto+=" (0%)<br>";
+				}
+				
+				texto+="<br><b>DEFENSORES:</b> <br>";
+				texto+="<b>Total unidades defensoras:</b> "+number_format(unidades_defensor_total)+"<br>";
+				texto+="<b>Total unidades defensoras muertas:</b> "+number_format(unidades_defensor_muertas_total);
+				if(unidades_defensor_muertas_total>0){
+					relacion=(unidades_defensor_muertas_total/unidades_defensor_total)*100;
+					texto+=" ("+relacion.toString().match(/[0-9]{1,3}/)+"%)<br>";
+				}else{
+					texto+=" (0%)<br>";
+				}
+				$('div.kk3').eq(i2).append(texto);
+			}
+		}
+	}
+}
+
+//////////////////////////
+//ENVIO JUGADORES ALIANZAS
+//////////////////////////
+
+if(GM_getValue(server+"_alianzas") !=1 && GM_getValue(server+"_alianzas") !=0 ){GM_setValue(server+"_alianzas", "0");}
+if(GM_getValue(server+"_alianzas") ==0){GM_registerMenuCommand('Envio jugadores alianza: Activar', alianzas_activar);}else{GM_registerMenuCommand('Envio jugadores alianza: Desactivar', alianzas_desactivar);}
+function alianzas_activar(){	GM_setValue(server+"_alianzas", "1");location.reload(false);}
+function alianzas_desactivar(){	GM_setValue(server+"_alianzas", "0");location.reload(false);}
+
+
+
+if(document.location.href.search(/ranking\/alliances/gi) != -1 && GM_getValue(server+"_alianzas")==1){
+	$(document).ready(function() {
+		var r=confirm("¿Deseas mandar los jugadores de estas alianzas a la web?\n"+
+						"CUIDADO: Esto bloqueara tu navegador hasta que termine su tarea"+
+						" y puede tardar varios minutos en enviar a todos los jugadores");
+		if (r==true){
+			//Bucle alianzas
+			$("div.kk3").find("table").find("a.link").each(function(){
+				idalianza = $(this).attr("href").match(/\d{1,}/gim);
+				GM_log("Alianza "+idalianza);
+				GM_xmlhttpRequest({
+						method: "GET",
+						url: "http://"+server+".hispaniaeljuego.com/game/alliances/" + idalianza,
+						synchronous: "false",
+						onload: function(response) {
+							//GM_log("Alianza "+idalianza);
+							//Bucle jugadores
+							$(response.responseText).find("a.link").each(function(){
+								if($(this).attr("href").search(/\/game\/player\/\d{1,}/gim) != -1){
+									idjugador = $(this).attr("href").match(/\d{1,}/gim);
+									GM_log("Jugador "+idjugador);
+									GM_xmlhttpRequest({
+										method: "GET",
+										url: "http://"+server+".hispaniaeljuego.com/game/player/" + idjugador,
+										synchronous: "true",
+										onload: function(response) {
+											//GM_log("Jugador "+idjugador);
+											if(response.finalUrl=="http://"+server+".hispaniaeljuego.com/game/region/city/"){
+												GM_log("FAIL AT: http://"+server+".hispaniaeljuego.com/game/player/" + idjugador);
+											}else{
+												player_submit(response.responseText);
+											}
+										}
+									});
+								}
+							});
+						}
+				});
+			});
+			setTimeout("alert('Los jugadores se han enviado correctamente');",20000);
+		}
+	});
+}
+
+////////////////////////////
+// Contador tropas en ciudad
+////////////////////////////
+
+//tropas en la ciudad
+if(document.location.href.search(/.hispaniaeljuego.com\/game\/region\/building\/3[01]{1,1}5\/troops/gim)!= -1){
+	divs=$('body').find('div.UN_NUMB');
+	ntropas=0;
+	for(i=0;i<divs.length;i++){
+		ntropas=parseInt(ntropas)+parseInt($(divs).eq(i).text().replace(/[\.]{1,}/gim,""));
+	}
+	$('div.kk3').eq(0).prepend("<h3>Total Tropas: "+ntropas+"</h3>");
+	//$('table').eq(2).hide();
+}
+//en cada diferente ciudad
+if(document.location.href=="http://"+server+".hispaniaeljuego.com/game/counselors/military/troops/"){
+	poblados=$('div.kk3').eq(0).find('div.kk3');
+	var n_tropas_total = 0;
+	for(i=0;i<poblados.length;i++){
+		tropas=$('div.kk3').eq(0).find('div.kk3').eq(i).find('div.UN_NUMB');
+		n_tropas=0;
+		for(i2=0;i2<tropas.length;i2++){
+			n_tropas+=parseInt(tropas.eq(i2).text().replace(/[\.]{1,}/gim,""));
+		}
+		n_tropas_total += n_tropas;
+		$('div.kk3').eq(0).find('div.kk3').eq(i).find('h2').eq(0).after("<div>Nº Tropas: "+n_tropas+"</div>");
+	}
+	$("#GA_CNT_M .kk3").eq(0).prepend("Tropas totales: " +number_format(n_tropas_total));
+}
+
+
+////////////////////////////////////////////////
+//Construcciones: Hora finalizacion en edificios
+////////////////////////////////////////////////
+//http://caura.hispaniaeljuego.com/game/region/site/302/
+//TODO filtrar por url
+
+if($('h3').text().search(/Ampliar a nivel [0-9]{1,2}|Construir Nuevo Edificio|Destruir/gim) !=-1){
+	if($('div.COST').length>1){
+		i=1;
+	}else{
+		i=0;
+	}
+	for(i=i;i<$('div.COST').length;i++){
+		time=$('div.COST').eq(i).find('span').text();
+		if(time.search(/[0-9]{1,1}d/gim)!=-1){
+			dia=time.match(/[0-9]{1,1}d/gim);
+			dia=dia[0].replace(/d/gim,"");
+			time=time.match(/[0-9]{2,2}/gim);
+			$('div.COST').eq(i).append("<br><span>Finalizacion: "+tiempo_restante(1, dia, time[0], time[1]));
+		}else{
+			time=time.match(/[0-9]{2,2}/gim);
+			
+			$('div.COST').eq(i).append("<br><span>Finalizacion: "+tiempo_restante(1, 0, time[0], time[1]));
+		
+		}
+	}
+}
+
+
+///////////////////////
+// ORDEN CONSTRUCCIONES
+//////////////////////
+if(document.location.href == "http://"+server+".hispaniaeljuego.com/game/counselors/construction/"){	
+	//Tiempos finalizacion
+	spans=$('div.kk').find('span');
+	for(i5=1;i5<spans.length;i5++){
+		time=$(spans).eq(i5).text();
+		if($(spans).eq(i5).text().search(/[0-9]{1,1}d/gim)!=-1){
+			dia=$(spans).eq(i5).text().match(/[0-9]{1,1}d/gim);
+			dia=dia[0].replace(/d/gim,"");
+			time=$(spans).eq(i5).text().match(/[0-9]{2,2}/gim);
+			$(spans).eq(i5).after(" - <span>Fin: "+tiempo_restante(1, dia, time[0], time[1])+"</span>");
+		}else{
+			time=time.match(/[0-9]{2,2}/gim);
+			$(spans).eq(i5).after(" - <span>Fin: "+tiempo_restante(1, 0, time[0], time[1])+"</span>");
+		}
+		i5++;
+	}
+	// X2
+	x2 = $("#counselors").find("img.ind_cob").length;
+	
+	inactivos = "";
+	
+	//Lista de construcciones
+	$("body").append("<div id='temp'></div>");
+	$("#temp").html($('div.kk').eq(0).html()).hide();
+	$("#temp").find('table').remove();
+	var construcciones = $("#temp").text();
+	$("#temp").remove();
+	
+	
+	//	Cada ciudad
+	$("#cityFrm").find("option").each(function(){
+		//	Nombre poblado
+		pob = $(this).attr("label").replace(/ \([0-9]{1,3},[0-9]{1,3}\)/,"");
+		patron = new RegExp("en "+pob+":", "gim");
+		
+		if(construcciones.search(patron)==-1){	//No se encuentra = esta inactivo
+			if(x2 == 0){
+				inactivos += pob+" (1)<br>";
+			}else{
+				inactivos += pob+" (2)<br>";
+			}
+		}else if(x2 == 1 && construcciones.match(patron).length == 1){	
+			//Si esta construyendo, hay x2 y solo una construccion
+			inactivos += pob+" (1)<br>";
+		}
+		//Quitamos este poblado de la lista de construcciones
+		construcciones = construcciones.replace(patron, "");
+		
+	});
+	
+	if(inactivos != ""){
+		$('div.kk').find('h2').eq(1).before("<h2>Poblados Inactivos</h2>"+inactivos+"<br>");
+	}
+	
+	//ORDEN CONSTRUCCIONES
+	orden_pobladosori=$('div.kk').html();
+	function control_orden_const(){
+		$('h2').first().append("<div id='ord_const'>Orden: <div class='ord_const1'>Poblado</div> / <div class='ord_const2'>Tiempo</div></div>");
+		$("#ord_const").css({"float":"right"});
+		$(".ord_const1").css({"display":"inline","color":"blue",});//.click(function(){orden_construcciones_ori()});
+		$(".ord_const2").css({"display":"inline","cursor":"pointer",}).click(function(){orden_construcciones_tiempo();});
+	}
+	control_orden_const();
+
+
+	//Orden por poblados
+	function orden_construcciones_ori(){
+		$('div.kk').html(orden_pobladosori);
+		control_orden_const();
+		
+		$(".ord_const1").css({"display":"inline","color":"blue",}).unbind('click');
+		$(".ord_const2").css({"display":"inline","cursor":"pointer",}).click(function(){orden_construcciones_tiempo();});
+	}
+	
+	
+	
+	
+	//Orden por tiempos
+	function orden_construcciones_tiempo(){
+		$(".ord_const2").css({"color":"blue","cursor":""}).unbind('click');
+		$(".ord_const1").css({"display":"inline","cursor":"pointer","color":""}).click(function(){orden_construcciones_ori();});
+		
+		//Cojemos todos los timepos, los pasamos a segundos y van a un array
+		var time_sec = new Array();	
+		divs=$("div[style='border:1px solid #ccc;height:auto;margin-bottom:3px;']").each(function(index){
+			s=$(this).find('span').eq(1).html();
+			if(s.search("d") != -1){
+				var dia=s.split("d, ");
+				dia2=parseInt(dia) * 24 * 3600;
+				var time=dia[1].split(":");
+				time_sec[index]=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2])+ parseInt(dia2);
+			}else{
+				var time=s.split(":");
+				time_sec[index]=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2]);
+			}
+		});
+		
+		//ordenamos el array
+		time_secORD = time_sec.sort(function(a,b){ return b - a; });
+		
+		//Recorremos el array ordenado y vamos metiendo los divs  ya ordenados en otro array
+		var bufsalida=new Array();
+		ya=0;
+		divs=$("div[style='border:1px solid #ccc;height:auto;margin-bottom:3px;']");
+		for(i2=0;i2<divs.length;i2++){
+			s=$(divs).eq(i2).find('span').eq(1).html();
+			if(s.search("d") != -1){
+				var dia=s.split("d, ");
+				dia2=parseInt(dia) * 24 * 3600;
+				var time=dia[1].split(":");
+				time_sec=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2])+ parseInt(dia2);
+			}else{
+				var time=s.split(":");
+				time_sec=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2]);
+			}
+			
+			for(i3=0;i3<time_secORD.length;i3++){
+				if(time_secORD[i3]==time_sec && ya != 1){
+					bufsalida[i3]=$(divs).eq(i2).html();
+					ya=1;
+				}
+			}
+			ya=0;
+		}
+		//borramos los divs viejos
+		$("div[style='border:1px solid #ccc;height:auto;margin-bottom:3px;']").remove();
+		
+		//vamos recorriendo el array y soltando divs
+		for(i=0;i<bufsalida.length;i++){
+			$('div.kk').prepend("<div style='border:1px solid #ccc;height:auto;margin-bottom:3px;'>"+bufsalida[i]+"</div>");
+		}
+		$('div.kk').prepend($('h2').eq(0));
+	}
+	orden_construcciones_tiempo();
+}
+
+/////////////////////////
+//COLORES EN PRODUCCION
+/////////////////////////
+if(document.location.href=="http://"+server+".hispaniaeljuego.com/game/counselors/construction/production/"){
+	
+	//CEREAL EN NEGATIVO
+	document.getElementsByTagName("body")[0].innerHTML=document.getElementsByTagName("body")[0].innerHTML.replace(/<td style="width:280px">/gim,"<td style='width:180px'>");
+	cantidades=document.getElementsByTagName("body")[0].innerHTML.match(/<td style="text-align:center">[0-9\.\-]*<\/td>/gim);
+	
+	titulo_almacenado=$('div.kk').find("td[style='text-align:center']").children().filter(function(){
+		return $(this).text()=="Almacenado";
+	});
+	i=3;
+	i2=0;
+	while(i<cantidades.length){
+		produccion=cantidades[i].replace(/<td style="text-align:center">|<\/td>|\./gim,'');
+		i++;
+		if(produccion<0){
+			$(titulo_almacenado).eq(i2).text("Almacenado (cereal para)");
+			almacenadoORI=cantidades[i].replace(/<td style="text-align:center">|<\/td>/gim,'');
+			almacenado=almacenadoORI.replace(/\./gim,'');
+			restante=String(almacenado/produccion);
+			restante=restante.replace(/[\-]{1,1}/gim,"").substring(0,4).concat(" Horas)</font>");
+			document.getElementsByTagName("body")[0].innerHTML=document.getElementsByTagName("body")[0].innerHTML.replace("<td style=\"text-align:center\">"+almacenadoORI,"<td style=\"text-align:center\">"+almacenadoORI+" <font color=red>("+restante);
+		}
+		i=i+11;
+		i2++;
+	}
+		
+	// Tiempo restante para llenar los almacenes
+	$("#GA_CNT_M").find("table.rk").each(function(index, value){			
+		$(this).find("tr").each(function(index, value){
+			
+			// El encabezado
+			if(index ==0 ){
+				$(this).append("<td style='text-align:center'><b>Lleno en (h)</b></td>");
+				return;
+			}
+			
+			produccion = $(this).find("td").eq(1).text().replace(/\./gim, "");
+			almacenado = $(this).find("td").eq(2).text().match(/[\.0-9]{1,}/gim, "")[0].replace(/\./gim, "");
+			capacidad = $(this).find("td").eq(3).text().replace(/\./gim, "");
+			
+			cant_restante = capacidad - almacenado;
+			
+			if(cant_restante == 0){ // Esta lleno el almacen
+				//	Insertamos el aviso como nuevo <TD>
+				$(this).append("<td style='text-align:center; background-color: red; color: white;'>LLENO</td>");
+			}else if(produccion > 0){
+				//	Calculamos el tiempo restante
+				tiem_restante = (cant_restante / produccion).toString();
+				
+				horas_restante = tiem_restante.match(/\d{1,}/gim)[0];
+				
+				// Aviso de llenado
+				if(horas_restante < 8){ // Horas restantes: Aviso de llenado
+					var style = 'background-color:orange; color:white;';
+				}else{
+					var style;
+				}
+				
+				//Insertamos el tiempo restante como nuevo <TD>
+				$(this).append("<td style='text-align:center;"+style+"'>"+horas_restante+"</td>");
+			}
+		});
+	});
+	
+}
+
+/////////////////////
+//Puntos de Evolucion
+/////////////////////
+if(location.href.search(/game\/counselors\/construction\/faith/gim) != -1){
+	var evo_produccion_total = 0;
+	
+	// Sumamos las producciones de puntos de evo
+	$("#GA_CNT_M").find("table.rk").eq(0).find("tr").each(function(index, value){
+		// El encabezado
+		if(index ==0 )	return;
+		
+		evo_produccion = parseInt($(this).find("td").eq(1).text().replace(/\./gim, ""));
+		evo_almacenado = parseInt($(this).find("td").eq(2).text().replace(/\./gim, ""));
+		evo_capacidad = parseInt($(this).find("td").eq(3).text().replace(/\./gim, ""));
+		
+		// Si esta llena no se cuenta
+		if(evo_capacidad > evo_almacenado){
+			evo_produccion_total += evo_produccion;
+		}
+	});
+	
+	evo_almacenada = $("#GA_CNT_M").find("p").filter(function() {
+		return $( this ).text().search(/Total Almacenada/gim) != -1;
+	}).text().match(/[0-9]{1,}[\.]{0,1}[0-9]{0,}/gim)[0].replace(/\./gim, "");
+	
+	evo_requerida = $("#GA_CNT_M").find("table[border='1']").find("b").filter(function() {
+		return $( this ).text().search(/[0-9]{1,}\.[0-9]{1,3}/gim) != -1;
+	}).text().match(/[0-9]{1,}[\.]{0,1}[0-9]{0,}/gim)[0].replace(/\./gim, "");
+	
+	tiempo_restante = (evo_requerida - evo_almacenada) / evo_produccion_total;
+		
+	if(tiempo_restante < 1) tiempo_restante = 0;
+		
+	horas_restante = (tiempo_restante * 24).toString().match(/[0-9]{1,}[\.]{0,1}/gim)[0].replace(/\./gim, "");
+		
+	var dias_restante = 0;
+	while(horas_restante > 23){
+		horas_restante = horas_restante - 24;
+		dias_restante++;
+	}
+	$("#GA_CNT_M").find("div.kk").append("<br><b>Tiempo restante:</b> "+ dias_restante +" dias y "+ horas_restante +" horas (aprox)");
+}
+
+//////////////////////////////////////////////////
+//ORDEN & TIEMPOS ATAQUE & COMERCIO
+//////////////////////////////////////////////////
+if(document.location.href == "http://"+server+".hispaniaeljuego.com/game/counselors/military/" && document.getElementsByTagName("body")[0].innerHTML.search("Actualmente no está pasando nada") == -1
+	|| document.location.href == "http://"+server+".hispaniaeljuego.com/game/counselors/commerce/" && document.getElementsByTagName("body")[0].innerHTML.search("Actualmente no hay comerciantes de viaje") == -1){
+	
+	//Ocultar cabecera consejero
+	//$('div.GA_MOD_HEADER').hide();
+	
+		//Orden tiempos
+		var bufsalida=new Array();
+		var ul2=document.getElementsByTagName("ul")[1];//SELECCIONAMOS LA LISTA DE MOVIMIENTOS
+		var li2=ul2.getElementsByTagName("li");//LISTA DE MOVIMIENTOS
+		var time_sec = new Array	();
+		for(i=0;i<li2.length;i++){
+			var span=li2[i].getElementsByTagName("span")[1];
+			if(span.innerHTML.search("d") != -1){
+				var dia=span.innerHTML.split("d, ");
+				dia2=parseInt(dia) * 24 * 3600;
+				var time=dia[1].split(":");
+				time_sec[i]=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2])+ parseInt(dia2);
+			}else{
+				var time=span.innerHTML.split(":");
+				time_sec[i]=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2]);
+			}
+		}
+
+		Array.prototype.sortNum = function() {
+			return this.sort(function(a, b) { return a - b; });
+		};
+		time_secORD=time_sec.sortNum();
+		
+		for(i2=0;i2<li2.length;i2++){
+			var span=li2[i2].getElementsByTagName("span")[1];
+			if(span.innerHTML.search("d") != -1){
+				var dia=span.innerHTML.split("d, ");
+				dia2=parseInt(dia) * 24 * 3600;
+				var time=dia[1].split(":");
+				time_sec=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2])+ parseInt(dia2);
+			}else{
+				var time=span.innerHTML.split(":");
+				time_sec=parseInt(time[0] * 3600)+parseInt(time[1] * 60)+parseInt(time[2]);
+			}
+			for(i3=0;i3<time_secORD.length;i3++){
+				if(time_secORD[i3]==time_sec){
+					bufsalida[i3]=li2[i2].innerHTML;
+					time_secORD[i3]="mierdaputa1";
+					time_sec="mierdaputa2";				
+				}
+			}
+		}
+		ul2.innerHTML="";
+		for(i=0;i<bufsalida.length;i++){
+			ul2.innerHTML+=bufsalida[i];
+		}
+	
+		//Tiempos llegada
+		spans=$('div.kk').find('span');
+		for(i5=1;i5<spans.length;i5++){
+			time=$(spans).eq(i5).text().match(/[0-9]{2,2}/gim);
+			$(spans).eq(i5).after(" - <span>Llegada: "+tiempo_restante(1, 0, time[0], time[1])+"</span>");
+			i5++;
+		}
+}
+
+/////////////////////////
+//COLORES EVENTOS MILITAR
+/////////////////////////
+if(document.location.href == "http://"+server+".hispaniaeljuego.com/game/counselors/military/" && document.getElementsByTagName("body")[0].innerHTML.search("Actualmente no está pasando nada") == -1){
+	$(document).ready(function() {
+		$evento=$("ul").eq(1).children();
+		for(i=0;i<$evento.length;i++){
+			$evento2=$evento.eq(i);
+			if($evento2.html().search(/es atacada/gim) != -1 && $evento2.text().search("por "+jugador_actual()) != -1 || $evento2.html().search(/Atacas a/gim) != -1){
+				$evento2.children("a").css({'color':'grey','text-decoration':'underline'});
+				$evento2.html("<font color='grey'>"+$evento2.html()+"</font>");
+			}else if($evento2.html().search(/es atacada por/gim) != -1){
+				$evento2.children("a").css({'color':'red','text-decoration':'underline'});
+				$evento2.html("<font color='red'>"+$evento2.html()+"</font>");
+			}
+			
+			if($evento2.html().search(/espiada|espiando/gim) != -1){
+				$evento2.children("a").css({'color':'orange','text-decoration':'underline'});
+				$evento2.html("<font color='orange'>"+$evento2.html()+"</font>");
+				
+				/*event = $($evento2).find("div").eq(0);
+				if(event.html().search(/espiada/gim) != -1){
+					var origen = event.html().split(/( está siendo espiada por |:)/)[2];
+					var destino = event.html().split(/( está siendo espiada por |:)/)[0];
+					$($evento2).find("div").eq(0).text("Espias "+ destino +" desde "+origen);
+				}else if(event.html().search(/espiando/gim) != -1){
+					var origen = event.html().split(/( desde |:)/)[2];
+					var destino = $(event).find("a")[1].outerHTML;
+					var victima = $(event).find("a")[0].outerHTML;
+					$($evento2).find("div").eq(0).html("Espias "+ destino +" ("+ victima +") desde "+origen);
+				}*/
+			}
+			
+			if($evento2.html().search(/enviando|envía/gim) != -1){
+				$evento2.html("<font color='green'>"+$evento2.html()+"</font>");
+			}
+			
+			if($evento2.html().search(/vuelven|retira|devuelve tus refuerzos/gim) != -1){
+				$evento2.html("<font color='blue'>"+$evento2.html()+"</font>");
+			}
+			
+			if($evento2.html().search(/conquista/gim) != -1){
+				$evento2.html("<font color='red'>"+$evento2.html()+"</font>");
+			}
+			
+			$evento2.html("<b>"+$evento2.html()+"</b>");
+		}
+	});
+}
+
+
+/////////////////////////
+//TIEMPO AL ENVIAR TROPAS
+if(document.location.href.search(/game\/region\/building\/[0-9]{3,3}\/troops\/send\//gim) !=-1 && $("input[name='btnB']").length>0 && $("input[name='btnB']").attr('value')!="Enviar Tropas"){
+	time=$('div.kk3').eq(2).find('p:last').text();
+	if(time.search(/[0-9]{1,1}d/gim)!=-1){
+		dia=time.match(/[0-9]{1,1}d/gim);
+		dia=dia[0].replace(/d/gim,"");
+		time=time.match(/[0-9]{2,2}/gim);
+		$('div.kk3').eq(2).find('p:last').append("<br><b>Ida:</b> "+tiempo_restante(1, dia, time[0], time[1]));
+		dia=dia*2;
+		time[0]=time[0]*2;
+		time[1]=time[1]*2;
+		$('div.kk3').eq(2).find('p:last').append("<br><b>Vuelta:</b> "+tiempo_restante(1, dia, time[0], time[1]));
+	}else{
+		time=time.match(/[0-9]{2,2}/gim);
+		$('div.kk3').eq(2).find('p:last').append("<br><b>Ida:</b> "+tiempo_restante(1, 0, time[0], time[1]));
+		time[0]=time[0]*2;
+		time[1]=time[1]*2;
+		$('div.kk3').eq(2).find('p:last').append("<br><b>Vuelta:</b> "+tiempo_restante(1, 0, time[0], time[1]));
+	}
+	
+}
+
+//Enlaces ciudades: eliminar movimiento pantalla
+if(location.href.search(/region\/building\/[0-9]{3,3}\/troops\/send\//gim) !=-1 && $("input[name='btnB']").attr('value')=="Enviar Tropas" ||
+	location.href.search(/region\/building\/1[0-9]{2,2}\/send\//gim) !=-1){
+	$(document).ready(function(){
+		//$("#GA_CNT_M div.kk3").eq(0).prepend("<a name='ciudades'></a>");
+		$("a.city_name").each(function(){
+			$(this).attr("href","#ciudades");
+		});
+	});
+}
+
+
+///////////////////
+//DETECTOR PARCELAS
+///////////////////
+	if(GM_getValue(server+"_parcelas") !=1 && GM_getValue(server+"_parcelas") !=0 ){GM_setValue(server+"_parcelas", "0");}
+	if(GM_getValue(server+"_parcelas") ==0 && navigator.appCodeName=="Mozilla"){GM_registerMenuCommand('Detector de parcelas: Activar', par_activar);}else{GM_registerMenuCommand('Detector de parcelas: Desactivar', par_desactivar);}
+	
+	function par_activar(){
+		var valle2=new Array("","","","");
+		while(valle2[0] == "" || valle2[1] == "" || valle2[2] == "" || valle2[3] == ""){
+			var valle=prompt("Introduce el tipo de parcela a buscar: (madera,cereal,piedra,hierro)\n Ejemplo 1: 4,4,4,4\n Ejemplo 2: 2,10,2,2","2,10,2,2");
+			valle2=valle.split(",");
+		}
+		GM_setValue(server+"_parcelas2", valle);
+		GM_setValue(server+"_parcelas", "1");
+		location.reload(false);
+	}
+	
+	function par_desactivar(){	GM_setValue(server+"_parcelas", "0");	location.reload(false);}
+
+	if(document.location.href.search(/\/map\//) != -1 && GM_getValue(server+"_parcelas") ==1){
+		var text = document.getElementsByTagName("body")[0].innerHTML;
+		var parcelas=GM_getValue(server+"_parcelas2").split(",");
+		var busqueda="Madera: "+parcelas[0]+"<br\/>Cereal: "+parcelas[1]+"<br\/>Piedra: "+parcelas[2]+"<br\/>Hierro: "+parcelas[3];
+		patron=new RegExp(busqueda,"gim");
+		
+		if(text.search(patron) != "-1"){
+			alert("Se ha encontrado "+text.match(patron).length+" parcela(s) de tipo: "+parcelas[0]+"-"+parcelas[1]+"-"+parcelas[2]+"-"+parcelas[3]);
+		}
+	}
+
+////////////////
+//VISUAL POBLADO
+////////////////
+if(document.location.href.search(/\/city\/[0-9]{1,}\//) != "-1" && GM_getValue(server+"_espiar")!=1){
+	//CALCULO TIEMPOS
+	calculo_tiempos("","",1);
+	
+	//MINIMAPA
+	mini_mapa="<td><div id='mini_mapa' style='margin-left:30px;;width:170px;height:135px;position:relative;z-index:300;background: url(http://static.hispaniaeljuego.com/0_96/img/map/minimap.jpg) center no-repeat;'></div></td>";
+	$('td#tiempos').parent().append(mini_mapa);
+	
+	
+	//poblado visionado
+	$('div.GA_MOD_A').find('a').filter(function(){return $(this).attr("href").search(/\/game\/map\/x\//gim) != -1;})
+	.each(function(index){
+		coor=$(this).attr("href").match(/[0-9]{1,3}/gim);
+		x=coor[0]/4;
+		y=coor[1]/4;
+		$('#mini_mapa').append("<div style='position:absolute;background-color:black;width:3px;height:3px;z-index:9999;left:"+x+"px;top:"+y+"px;'></div>\n");
+	});
+	//poblados propios
+	$("#cities").children().each(function(index){
+		if($(this).attr("selected") == "selected"){
+			var color = "red";
+			var index = "99";
+		}else{
+			var color = "yellow";
+			var index = "50";
+		}
+		
+		coor=$(this).attr("label").match(/\([0-9]{1,3},[0-9]{1,3}\)/gim);
+		coor=coor[0].match(/[0-9]{1,3}/gim);
+		x=coor[0]/4;
+		y=coor[1]/4;
+		$('#mini_mapa').append("<div style='position:absolute;background-color:"+ color +";width:3px;height:3px;z-index:"+ index +";left:"+x+"px;top:"+y+"px;'></div>\n");
+	});		
+	
+	//consulta espionajes
+	var id = document.location.href.replace(/[a-z\.\:\/]{1,}/gi, "");
+	GM_xmlhttpRequest({
+		method: "GET",
+		url: ip + "consulta-script.php?consulta_espionaje=1&idpoblados="+id,
+		onload: function(response) {
+			if(response.responseText.length<5){
+				$('div.kk').find('h2').eq(0).after("<a href="+ip+"buscar-espionaje.php?idcity="+id+"><b>Hay "+response.responseText+" espionajes en la web</b></a><br><br>");
+			}
+		}
+	});
+	//Enlace poblado a web
+	$('h1').eq(0).after("<a href="+ip+"search-poblados2.php?idpoblados="+id+"><b>(Ver en la web)</b></a>");
+	
+}
+
+////////////////
+//VISUAL CELDA/CASILLA
+////////////////
+if(document.location.href.search(/\/cell\/[0-9]{1,}\//) != "-1"){
+	calculo_tiempos("","",1);
+	
+	//Minimapa
+	mini_mapa="<td><div id='mini_mapa' style='margin-left:30px;;width:170px;height:135px;position:relative;z-index:300;background: url(http://static.hispaniaeljuego.com/0_96/img/map/minimap.jpg) center no-repeat;'></div></td>";
+	$('td#tiempos').parent().append(mini_mapa);
+	
+	$('div.GA_MOD_A').find('a').filter(function(){return $(this).attr("href").search(/\/game\/map\/x\//gim) != -1;})
+	.each(function(index){
+		coor=$(this).attr("href").match(/[0-9]{1,3}/gim);
+		x=coor[0]/4;
+		y=coor[1]/4;
+		$('#mini_mapa').append("<div style='position:absolute;background-color:black;width:3px;height:3px;z-index:9999;left:"+x+"px;top:"+y+"px;'></div>\n");
+	});
+	
+	// poblados propios
+	$("#cities").children().each(function(index){
+		if($(this).attr("selected") == "selected"){
+			var color = "red";
+			var index = "99";
+		}else{
+			var color = "yellow";
+			var index = "50";
+		}
+		
+		coor=$(this).attr("label").match(/\([0-9]{1,3},[0-9]{1,3}\)/gim);
+		coor=coor[0].match(/[0-9]{1,3}/gim);
+		x=coor[0]/4;
+		y=coor[1]/4;
+		$('#mini_mapa').append("<div style='position:absolute;background-color:"+ color +";width:3px;height:3px;z-index:"+ index +";left:"+x+"px;top:"+y+"px;'></div>\n");
+	});
+}
+
+////////////////
+//VISUAL JUGADOR
+////////////////
+if(document.location.href.search(/\/player\/[0-9]{1,}\//) != -1){
+	var texto=document.getElementsByTagName("body")[0].innerHTML;
+	
+	var jugador = texto.match(/<h2>Ciudades de [0-9a-z _\-]*<\/h2>/gi);
+	var jugador = jugador[0].replace("<h2>Ciudades de ", "");
+	var jugador = jugador.replace("<\/h2>", "");
+	var coincidencia=texto.match(/<h1 style="margin-bottom:0;border:0px solid #000;">[0-9a-z _\-]*/gi);
+	
+	//Enlace jugador a web
+	$('h1').eq(0).after("<a href="+ip+"search-poblados2.php?jugador="+jugador+"><b>(Ver en la web)</b></a>");
+	
+	$(window).load(function() {
+		//Minimapa con los poblados del jugador
+		var mini_mapa = "<div id='mini_mapa' style='width:170px;height:135px;position:relative;top:-110px;left:470px;z-index:300;background: url(http://static.hispaniaeljuego.com/0_96/img/map/minimap.jpg) center no-repeat;'></div>";
+		$(mini_mapa).appendTo('table.player_info');
+		$('div.kk2').attr("style","height:180px;");
+		$('table.rk').find('a').filter(function(){return $(this).attr("href").search(/\/game\/map\//gim) != -1;})
+		.each(function(index){
+			var coor=$(this).attr("href").match(/[0-9]{1,3}/gim);
+			var x=coor[0]/4;
+			var y=coor[1]/4;
+			$('#mini_mapa').append("<div id='city_"+index+"' style='position:absolute;background-color:black;width:3px;height:3px;z-index:100;left:"+x+"px;top:"+y+"px;'></div>\n");
+			
+		});
+		
+		//Mis ciudades
+		$("#cities").children().each(function(index){
+			if($(this).attr("selected") == "selected"){
+				var color = "red";
+				var index = "101";
+			}else{
+				var color = "yellow";
+				var index = "50";
+			}
+			var coor=$(this).attr("label").match(/\([0-9]{1,3},[0-9]{1,3}\)/gim);
+			coor=coor[0].match(/[0-9]{1,3}/gim);
+			var x=coor[0]/4;
+			var y=coor[1]/4;
+			$('#mini_mapa').append("<div style='position:absolute;background-color:"+ color +";width:3px;height:3px;z-index:"+ index +";left:"+x+"px;top:"+y+"px;'></div>\n");
+		});
+
+		
+		//Al mouseover sobre las coor de un poblado se muestran los tiempos y se marca en rojo en el mini mapa
+		$('div.GA_MOD_A').css({"height":"200px"});
+		$('div.GA_MOD_A').eq(0).append("<div id='cuadro_tiempos' style='position:relative;top:-235px;left:290px;display:inline-block;visibility:hidden;border:1px solid black'><b>Tiempos:</b></div>");
+		$('table.rk').find('a').filter(function(){return $(this).attr("href").search(/\/game\/map\//gim) != -1;})
+		.each(function(index){
+			$(this).mouseover(function(){
+				$("#marco2").remove();
+				$('#city_'+index).css({"background-color":"red","z-index":"999999"});
+				coor=$(this).text().split(", ");
+				calculo_tiempos(coor[0],coor[1],2);
+				$('#cuadro_tiempos').css({"visibility":"visible"});
+			});
+			$(this).mouseout(function(){
+				$('#cuadro_tiempos').css({"visibility":"hidden"});
+				$('#city_'+index).css({"background-color":"black","z-index":"99"});
+			});
+		});
+		player_submit(texto);
+	});
+}
+
+///////////////////////////
+//CUADRO INFORMACION SCRIPT
+///////////////////////////
+$('#top_menu').append("<a href='"+ip+"?server="+server+"' style='color:red;text-decoration:underline;' target='_blank'>Web Triforce</a>");
+
+contenido="<div style='border-bottom: 1px solid #CCCCCC;padding: 0 0 15px 8px;width:195px;'>";
+contenido+= "<b style='display: inline-block; text-align: center; width: 100%;'><img src='"+GM_getResourceURL("logo")+"' style='display: inline-block; vertical-align: middle; width: 31px;'>  Triforce v"+version+"</b>";
+
+var funciones = "";
+if(GM_getValue(server+"_parcelas")=="1")	funciones +="<br>Detector de Parcelas ("+GM_getValue(server+"_parcelas2")+")";
+if(GM_getValue(server+"_alianzas")=="1")	funciones +="<br>Envio jugadores alianza";
+if(GM_getValue(server+"_fakes")=="1")	funciones +="<br><div class='alert_func'>Automatizacion fakes</div>";
+if(GM_getValue(server+"_espiar")=="1")	funciones+="<br><div class='alert_func'>Automatizacion Espionajes</div>";
+if(GM_getValue(server+"_comercio")=="1"){
+	if(GM_getValue(server+"_com_tipo")=="auto") funciones += "<br><div class='alert_func'>Automatizacion comercio</div>";
+	if(GM_getValue(server+"_com_tipo")=="semi") funciones += "<br><div class='alert_func'>Semi-auto comercio</div>";
+	if(GM_getValue(server+"_com_tipo")=="manual") funciones += "<br>Manual comercio";
+}	
+
+if(funciones.length > 0) funciones = "<br>Funciones activadas:"+funciones;
+
+contenido += funciones + "</div>";
+$("#sidebar_content").before(contenido);
+
+//Div Alerta: CSS & parpadeo
+if($('div.alert_func').length > 0){
+	$('div.alert_func').css({"color":"red","font-weight":"bold","display":"inline"});
+	$(function() {
+		setInterval(function() {
+			if($('.alert_func').css("visibility") == "visible") {
+				$('.alert_func').css("visibility","hidden");
+			} else{
+				$('.alert_func').css("visibility","visible");
+			}
+		}, 500);
+	});
+}
+
+////////////////////////
+//MAPA FLECHAS DE 6 EN 6
+////////////////////////
+if(document.location.href.search(/\/game\/map\//) != -1){
+	$(document).ready(function(){
+		var x_menor = parseInt($("#map_coords .coord_x:first").text());
+		var x_mayor = parseInt($("#map_coords .coord_x:last").text());
+		
+		var y_menor = parseInt($("#map_coords .coord_y:first").text());
+		var y_mayor = parseInt($("#map_coords .coord_y:last").text());
+		
+		$("#arrows area").each(function(index){
+			switch(index){
+				case 1: $(this).attr("href", "/game/map/x/"+ (x_menor + 3) +"/y/"+ (y_menor - 4) +"/"); break; //top
+				case 2: $(this).attr("href", "/game/map/x/"+ (x_menor + 3) +"/y/"+ (y_mayor + 4) +"/"); break; //bottom
+				case 3: $(this).attr("href", "/game/map/x/"+ (x_mayor + 4) +"/y/"+ (y_menor + 3) +"/"); break; //right
+				case 4: $(this).attr("href", "/game/map/x/"+ (x_menor - 4) +"/y/"+ (y_menor + 3) +"/"); break; //left
+			}
+		});
+	});
+	
+	//poblados propios
+	$("#cities").children().each(function(index){
+		coor=$(this).attr("label").match(/\([0-9]{1,3},[0-9]{1,3}\)/gim);
+		coor=coor[0].match(/[0-9]{1,3}/gim);
+		x=(coor[0]/4)-1;
+		y=(coor[1]/4)-1;
+		$('#minimap_ctn').append("<div style='position:absolute;background-color:yellow;width:3px;height:3px;z-index:1;left:"+x+"px;top:"+y+"px;'></div>\n");
+	});	
+	
+	//visor tipo de casillas/parcelas (madera, cereal, piedra, hierro)
+	casillas=$('table.map').eq(1).find('td');
+	for(i=0;i<casillas.length;i++){
+		if($(casillas).eq(i).find('a').eq(0).attr("onmouseover").search(/No colonizable|Rango/gim)==-1 && $(casillas).eq(i).find('a').eq(0).attr("onmouseover").length>60){
+			tipo=$(casillas).eq(i).find('a').eq(0).attr("onmouseover").match(/[0-9]{1,2}/gim);
+			tipo=tipo[0]+"-"+tipo[1]+"-"+tipo[2]+"-"+tipo[3];
+			$(casillas).eq(i).find('a').eq(0).html("<div style='float:right;margin-top:50px;'>"+tipo+"</div>");
+			if(tipo == "4-4-4-4")	$(casillas).eq(i).find('a').eq(0).children().css("color","green");
+			if(tipo == "3-3-3-3")	$(casillas).eq(i).find('a').eq(0).children().css("color","black");
+			if(tipo == "2-10-2-2")	$(casillas).eq(i).find('a').eq(0).children().css("color","red");
+		}
+	}
+}
+
+///////////////////////////
+//NOTIFICACIONES CONSEJEROS
+$(document).ready(function(){
+	consejeros=$('div#counselors').children();
+	notificaciones="";
+	for(i=0;i<consejeros.length;i++){
+		if($(consejeros).eq(i).find('div.ind_msg').length>0){
+			switch(i){
+				case 0:	notificaciones+="Men:"+$(consejeros).eq(i).find('div.ind_msg').text()+" ";	break;
+				case 1:	notificaciones+="Cos:"+$(consejeros).eq(i).find('div.ind_msg').text()+" ";	break;
+				case 2:	notificaciones+="Tec:"+$(consejeros).eq(i).find('div.ind_msg').text()+" ";	break;
+				case 3:	notificaciones+="Com:"+$(consejeros).eq(i).find('div.ind_msg').text()+" ";	break;
+				case 4:	notificaciones+="Mil:"+$(consejeros).eq(i).find('div.ind_msg').text()+" ";	break;
+			}
+		}
+	}
+	//Para comprobar que la ejecucion sea OK
+	if(notificaciones != ""){
+		document.title = server[0].toUpperCase()+server.substring(1)+": "+notificaciones;
+	}else{
+		document.title = server[0].toUpperCase()+server.substring(1);
+	}
+});
+
+//NIVELES EDIFICIOS VALLE
+if(location.href=="http://"+server+".hispaniaeljuego.com/game/region/"){
+	i=0;
+	$("#city_map").find("area").each(function(index){
+		if($(this).attr("onmouseover").search(/[0-9]{1,2}/gim)!=-1){
+			$("#city_ctn").find("div[class='city_spr3']").eq(i).append("<div style='background-color:white;display:inline;position:relative;top:-68px;padding:4px;'>"+$(this).attr("onmouseover").match(/[0-9]{1,2}/gim)[0]+"</div>");
+			i++;
+		}
+	});
+}
+
+//NIVELES EDIFICIOS CIUDAD/CAMPAMENTO
+if(location.href.search(/\/region\/(city|militar)/gim)!=-1){
+	i=0;
+	$("#city_map").find("area").each(function(index){
+		if($(this).attr("onmouseover").search(/[0-9]{1,2}/gim)!=-1){
+			if($(this).attr("onmouseover").search(/(Muralla|Empalizada)/gim)!=-1){
+				$("#city_ctn").find("div[class='city_spr3']").filter(function(){
+					return $(this).find('img').eq(0).attr("src").search(/\/img\/stages\/(pob|com|cam)\/bui\//gim)!=-1;
+				}).eq(i).prepend("<div style='z-index:9999;background-color:white;display:inline;padding:2px;'>Muralla: "+$(this).attr("onmouseover").match(/[0-9]{1,2}/gim)[0]+"</div>");	
+			}else{
+				var top=$("#city_ctn").find("div[class='city_spr3']").filter(function(){
+					return $(this).find('img').eq(0).attr("src").search(/\/img\/stages\/(pob|com|cam)\/bui\//gim)!=-1;
+				}).eq(i).find('img').eq(0).css("height").match(/[0-9]{1,}/gim)[0]/2;
+				
+				var right=$("#city_ctn").find("div[class='city_spr3']").filter(function(){
+					return $(this).find('img').eq(0).attr("src").search(/\/img\/stages\/(pob|com|cam)\/bui\//gim)!=-1;
+				}).eq(i).find('img').eq(0).css("width").match(/[0-9]{1,}/gim)[0]/2;
+				
+				$("#city_ctn").find("div[class='city_spr3']").filter(function(){
+					return $(this).find('img').eq(0).attr("src").search(/\/img\/stages\/(pob|com|cam)\/bui\//gim)!=-1;
+				}).eq(i).append("<div style='z-index:9999;background-color:white;display:inline;position:relative;top:-"+top+"px;right:-"+right+"px;padding:2px;'>"+$(this).attr("onmouseover").match(/[0-9]{1,2}/gim)[0]+"</div>");
+			}
+			i++;
+		}
+	});
+}	
+
+/////////////////////////////
+// Mensajeria: Links informes
+/////////////////////////////
+if(location.href.search(/diplomacy\/message\/inbox\/[0-9]{1,}/gim)!=-1){
+	$(window).load(function(){
+		setTimeout(function(){
+			//Limpiamos restos de ejecuciones previas
+			$(window[0].document.body).find("div.atk").remove();
+			
+			// Definimos los patrones de busqueda de IDs de informes
+			var patrones = new Array();
+			patrones[0] = new RegExp("(^|<br>|<p>)[0-9]{1,}[\/]{0,1}(</p>|<br>|$)", "gim"); //Numero solo
+			patrones[1] = new RegExp("[0-9]{4,}[\/]{0,1}(</p>|<br>|$)", "gim"); //Numero al final de linea
+			patrones[2] = new RegExp("\/counselors\/military\/detail\/[0-9]{1,}", "gim"); //Consejero militar
+			patrones[3] = new RegExp("\/alliances\/attacks\/detail\/[0-9]{1,}", "gim"); //Alianza
+			
+			// Pasamos los patrones por el mensaje
+			var ids = new Array();
+			var coincidencia = false;
+			var i3 = 0;
+			for(i=0;i<patrones.length;i++){
+				// Hay alguna coincidencia
+				if($(window[0].document.body).html().search(patrones[i]) != -1){
+					coincidencia = true;
+					// Recogemos las coincidencias
+					resultados_temp = $(window[0].document.body).html().match(patrones[i]);
+					// Recorremos las coincidencias
+					for(i2=0;i2<resultados_temp.length;i2++){
+						id_temp = resultados_temp[i2].match(/[0-9]{1,}/gim)[0]; //Numero entero
+						if(ids.indexOf(id_temp) == -1){ //No existe ya en el array
+							ids[i3] = id_temp;
+							i3++;
+						}
+					}
+				}
+			}
+			
+			//Añadimos los links al iframe
+			if(coincidencia == true){
+				texto = "<div class='atk'><b>Posibles Informes detectados:</b><br>";
+				for(i=0;i<ids.length;i++){
+					texto += "<a href='/game/alliances/attacks/detail/"+ ids[i] +"' target='_parent'>Nº "+ ids[i] +"</a><br>";
+				}
+				$(window[0].document.body).find("p").eq(0).prepend(texto +"</div><br>");
+				
+				//Reajustamos la altura del iframe
+				height = $("#ta1_ifr").height() + 20 +(ids.length * 25); // +20 por la primera linea y + 25 por cada link
+				$("#ta1_ifr").height(height);
+			}
+		}, 2000);//Timeout ms
+	});
+}
+
+
+///////////////////////
+//FAKES: AUTOMATIZACION
+///////////////////////
+if (GM_getValue(server + "_fakes") != 1 && GM_getValue(server + "_fakes") != 0) {
+	GM_setValue(server + "_fakes", "0");
+}
+if (GM_getValue(server + "_fakes") == 0) {
+	GM_registerMenuCommand('Automatizacion Fakes: Activar', fak_activar);
+} else {
+	GM_registerMenuCommand('Automatizacion Fakes: Desactivar', fak_desactivar);
+}
+function fak_activar() {
+	var fakes_unit = prompt("Por favor introduce tipo de unidad:\n0: Infanteria\n1: Maquinas", "1");
+
+	if(fakes_unit > -1){
+		GM_setValue(server + "_fakes_unit", fakes_unit);
+		GM_setValue(server + "_fakes", "1");
+		location.reload(false);
+	}
+}
+
+function fak_desactivar() {
+	GM_setValue(server + "_fakes", "0");
+	location.reload(false);
+}
+
+
+//	Visual poblado: Link enviar tropas
+if (document.location.href.search(/\/game\/city\/[0-9]{1,}/gim) != -1 && GM_getValue(server + "_fakes") == 1) {
+	var url = ($("#GA_CNT_M").find("a").filter(function(){
+		return $(this).text() == "Enviar Tropas";
+	}).attr("href"));
+	if(url != undefined)
+		location.href = "http://" + server + ".hispaniaeljuego.com" + url;
+}
+
+//formulario
+var patron = /game\/region\/building\/[0-9]{1,3}\/troops\/send\/[0-9]{1,}/;
+if (document.location.href.search(patron) != -1 && GM_getValue(server + "_fakes") == 1) {
+	var unidad_preparada = false;
+	if ($("#id_attack_type_1").length == 1)
+		$("#id_attack_type_1").attr('checked',true);
+
+	if (GM_getValue(server + "_fakes_unit") == "0") {
+			
+		if ($("form[name='c']").html().search(/title="Príncipe" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2020").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Triario" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2022").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Guerrero Cántabro" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2000").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Guerrero Turdetano" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2002").val("1");
+			unidad_preparada = true;
+		}
+	} else if (GM_getValue(server + "_fakes_unit") == "1") {
+		if ($("form[name='c']").html().search(/title="Onager" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2030").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Ballesta" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2029").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Catapulta" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2010").val("1");
+			unidad_preparada = true;
+		}
+		if ($("form[name='c']").html().search(/title="Ariete" class="UN_NUMB UN_COUNT UNT_/gim) != -1 && unidad_preparada == false) {
+			$("#id_u_2009").val("1");
+			unidad_preparada = true;
+		}
+	}
+	if(unidad_preparada == true)
+		$("form[name='c']").submit();
+}
+
+
+///////////////////////////
+//ESPIONAJE: AUTOMATIZACION
+///////////////////////////
+if (GM_getValue(server + "_espiar") != 1 && GM_getValue(server + "_espiar") != 0) {
+	GM_setValue(server + "_espiar", "0");
+}
+if (GM_getValue(server + "_espiar") == 0) {
+	GM_registerMenuCommand('Automatizacion espionajes: Activar', esp_activar);
+} else {
+	GM_registerMenuCommand('Automatizacion espionajes: Desactivar', esp_desactivar);
+}
+function esp_activar() {
+	var espias = prompt("Por favor introduce el nº de espias a mandar", "50");
+	if(espias > 0){
+		GM_setValue(server + "_espiar", "1");
+		GM_setValue(server + "_espias", espias);
+		location.reload(false);
+	}
+}
+
+function esp_desactivar() {
+	GM_setValue(server + "_espiar", "0");
+	location.reload(false);
+}
+
+//	Visual poblado: Link enviar tropas
+if (document.location.href.search(/\/game\/city\/[0-9]{1,}/gim) != -1 && GM_getValue(server + "_espiar") == 1) {
+	var url = ($("#GA_CNT_M").find("a").filter(function(){
+		return $(this).text() == "Enviar Tropas";
+	}).attr("href"));
+	if(url != undefined)
+		location.href = "http://" + server + ".hispaniaeljuego.com" + url;
+}
+
+// Formulario tropas
+if (document.location.href.search(/game\/region\/building\/[0-9]{1,}\/troops\/send\/[0-9]{1,}/gim) != -1 && GM_getValue(server + "_espiar") == 1) {
+	$(document).ready(function(){
+		// Modo espionaje
+		$("#id_attack_type_2").attr('checked',true);
+		
+		var disponibles = false;
+		
+		// Hay tropas
+		if($("form[name='c']").length > 0){
+			// Romanos
+			if($("#id_t_2021").text().search(/([0-9]{1,}|[0-9]{1,}[\.][0-9]{1,})/gim) != -1){
+				disponibles = $("#id_t_2021").text();
+				if(disponibles >= GM_getValue(server + "_espias")){
+					$('#id_u_2021').val(GM_getValue(server + "_espias"));
+				}else{
+					$('#id_u_2021').val(disponibles);
+				}
+			}
+			
+			// Hispanos
+			if($("#id_u_2001").text().search(/([0-9]{1,}|[0-9]{1,}[\.][0-9]{1,})/gim) != -1){
+				disponibles = $("#id_t_2001").text();
+				if(disponibles >= GM_getValue(server + "_espias")){
+					$('#id_u_2001').val(GM_getValue(server + "_espias"));
+				}else{
+					$('#id_u_2001').val(disponibles);
+				}
+			}
+		}
+		
+		// Ha fallado el envio?
+		if($("#id_city").val().length < 1){
+			//Lo reintentamos
+			GM_log("Fallo envio espias x5010");
+			/*var aleatorio = Math.floor(Math.random() * (10000-750)) + 750; //ms
+			setTimeout(function(){
+				location.href = location.href.match(/[0-9a-z\.\/:]{5,}/gim)[0];}, aleatorio);*/
+			// Al esperar,la web pide recargar por eventos y nos pide recargar el POST
+			location.href = location.href.match(/[0-9a-z\.\/:]{5,}/gim)[0];
+		}else{
+			// No
+			$("form[name='c']").submit();
+		}
+		
+	});
+}
+
+// Detectar si se ha enviado
+if (location.href.search(/region\/building\/[0-9]{1,3}\/troops\/out\//gim) != -1 && GM_getValue(server + "_espiar") == 1){
+	$(document).ready(function(){
+		document.title = server[0].toUpperCase()+server.substring(1)+": Enviado";
+	});
+}
+  
+//////////////////////////
+// Militar: Carga unidades
+//////////////////////////
+var patron = /game\/region\/building\/[0-9]{1,3}\/troops\/send/;
+if (document.location.href.search(patron) != -1 && $("input[name='btnB']").attr("value") == "Enviar Tropas") {
+	$("form[name='c']").prepend("<h3 id='carga_total' style='margin-bottom: -10px;'>Carga unidades: 0</h3>");
+	
+	// Al cambiar cantidad unidades
+	$("td.ACT_MIL_FORM input[type='text']").on("change keyup paste", function(event){
+		var carga_total = 0;
+		// Recuento unidades
+		$("td.ACT_MIL_FORM").each(function(index){
+			//Unidades disponibles
+			if($(this).find("input").length > 0){
+				var units = $(this).find("input").val();
+				
+				//Cantidad de carga de dicha unidad
+				if(bando() == "romano"){
+					switch(index){
+						case 0: carga_total += units * 40; break;
+						case 1: carga_total += units * 0; break; //Espia
+						case 2: carga_total += units * 50; break;
+						case 3: carga_total += units * 25; break;
+						case 4: carga_total += units * 55; break;
+						case 5: carga_total += units * 30; break;
+						case 6: carga_total += units * 40; break;
+						case 7: carga_total += units * 30; break;
+						case 8: carga_total += units * 0; break; //Maquina
+						case 9: carga_total += units * 0; break; //Maquina
+						case 10: carga_total += units * 2000; break;
+					}
+				}else if(bando() == "hispano"){
+					switch(index){
+						case 0: carga_total += units * 34; break;
+						case 1: carga_total += units * 0; break; //Espia
+						case 2: carga_total += units * 40; break;
+						case 3: carga_total += units * 25; break;
+						case 4: carga_total += units * 50; break;
+						case 5: carga_total += units * 30; break;
+						case 6: carga_total += units * 40; break;
+						case 7: carga_total += units * 20; break;
+						case 8: carga_total += units * 0; break; //Maquina
+						case 9: carga_total += units * 0; break; //Maquina
+						case 10: carga_total += units * 2000; break;
+					}
+				}
+			}
+		});
+		$("#carga_total").html("Carga unidades: "+ number_format(carga_total));
+	});
+}
+
+/////////////////////////////
+// Ocultar Headers Consejeros
+var patron = /(counselors\/construction|counselors\/commerce)/;
+if (document.location.href.search(patron) != -1) {
+	$('div.GA_MOD_HEADER').hide();
+}
+
+// Militar
+var patron = /counselors\/military/;
+if (document.location.href.search(patron) != -1) {
+	$('div.GA_MOD_HEADER').hide();
+	$("ul.GA_MOD_TABS").append("<li><a href=\"/game/region/pyres/light\"><span>Piras</span></a></li>");
+}
+
+// Tienda General
+var patron = /(troops\/out|troops\/send|troops\/conquest|building\/315)/;
+if (document.location.href.search(patron) != -1) {
+	$("div.kk2").find("tr").eq(0).hide();
+}
+
+///////////////////////////
+// Mercado: Tiempo de envio
+if (location.href.search(/region\/building\/1[0-9]{2,2}\/send/gim) != -1) {
+	
+	function mercado_calculo_tiempo(){
+		var x_ori = coors_actuales()[0];
+		var y_ori = coors_actuales()[1];
+		
+		var x_dest = $("#id_x").val();
+		var y_dest = $("#id_y").val();
+		
+		if(x_dest.length == 0 || y_dest.length == 0){
+			$("#tiempo").html("");
+			return false;
+		}
+		
+		var x = x_dest - x_ori;
+		var y = y_dest - y_ori;
+		
+		var x2 = x * x;
+		var y2 = y * y;
+		
+		var z = x2 + y2;
+		var distancia = Math.sqrt(z);
+		
+		if(bando() == "hispano"){
+			var tiempo_casilla = 88;
+		}else if(bando() == "romano"){
+			var tiempo_casilla = 124;
+		}
+		
+		var segundos_ida = distancia * tiempo_casilla;
+		var minutos_ida = (segundos_ida / 60).toString().match(/[0-9]{1,}/gim)[0];
+		var minutos_vuelta = minutos_ida * 2;
+		
+		var ida = tiempo_restante(1, 0, 0, minutos_ida);
+		var vuelta = tiempo_restante(1, 0, 0, minutos_vuelta);
+		
+		var texto = "<b>Tiempo:</b> "+ seg_a_hora(segundos_ida) +"<br>";
+			texto += "<b>Ida:</b> "+ ida +"<br>";
+			texto += "<b>Vuelta:</b> "+ vuelta +"<br>";
+		
+		$("#tiempo").html(texto);
+	}
+	
+	$(document).ready(function(){
+		// Insertamos el contenedor
+		$("form[name='c'] input[type='submit']").before("<div id='tiempo'></div><br>");
+		
+		// Esperamos eventos
+		/*$("#id_x, #id_y, a.city_name").on("change keyup paste propertychange input click", function(event){
+			setTimeout(function(){	mercado_calculo_tiempo();	}, 500);
+		});*/
+		
+		setInterval(function(){ mercado_calculo_tiempo(); }, 500);
+	});
+}
+
+//////////////////////
+// Finalizacion tropas
+if (location.href.search(/region\/building\/3[0-9]{2,2}\/train/gim) != -1) {
+
+	function calculo_produccion_tropas(){
+		$('div.COST').each(function(index){
+			// si es el impar
+			if(index % 2 == 1){
+				var time = $(this).find('span').text();
+				if(time.search(/[0-9]{1,1}d/gim)!=-1){
+					dia=time.match(/[0-9]{1,1}d/gim);
+					dia=dia[0].replace(/d/gim,"");
+					time=time.match(/[0-9]{2,2}/gim);
+					$(this).find("span.finalizacion").html("&nbsp- "+tiempo_restante(1, dia, time[0], time[1]));
+				}else{
+					time=time.match(/[0-9]{2,2}/gim);
+					$(this).find("span.finalizacion").html("&nbsp- "+tiempo_restante(1, 0, time[0], time[1]));
+				}
+			}
+		});
+	}
+	
+	$(document).ready(function(){
+		// Insertamos los campos
+		$('div.COST').each(function(index){
+			// si es impar
+			if(index % 2 == 1){
+					$(this).append("<span class='finalizacion'><span>");
+			}
+		});
+		
+		setInterval(function(){
+			calculo_produccion_tropas();
+		}, 750);
+	});
+}
+
+
+//////////////////////////
+//COMERCIO: AUTOMATIZACION
+//////////////////////////
+GM_registerMenuCommand('Automatizacion comercio', comercio);
+
+function comercio_tiempo(){
+	var actual = GM_getValue(server+"_com_tiempo");
+	var restante = actual - 1;
+	GM_log("Comercio: Cuenta atras: "+ restante);
+	if(restante < 1){
+		GM_log("Comercio: Cuenta atras comercio a 0");
+		comercio_check();
+	}else{
+		GM_setValue(server+"_com_tiempo", restante);
+	}
+	
+	if(restante < 60){ //segundos para la activacion
+		$('#cuenta_atras').html("<b><span style='color:red'>Comercio en: "+seg_a_hora(restante)+"</span></b></div>");
+	}else{
+		$('#cuenta_atras').html("<b>Comercio en: "+seg_a_hora(restante)+"</b></div>");
+	}	
+}
+
+function comercio_check(){
+		GM_log("Comercio: comercio_check()");
+		GM_log("Ciudades ya enviadas: "+ GM_getValue(server+"_com_citys_sent"));
+		GM_setValue(server+"_com_checking", "1");
+		if(location.href != "http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/"){
+			location.href = "http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/";
+			GM_log("Comercio: Vamos a los mercados");			
+		}else{
+			var salimos = 0;
+			$("div.kk").find("table.rk").eq(0).find("tr").each(function(index){
+				var ciudades_negadas = GM_getValue(server +"_com_ciudades").split(",");
+				var ciudades_enviadas = GM_getValue(server+"_com_citys_sent").split(",");
+				var ciudad = $(this).find("td").eq(0).text();
+				
+				if(salimos != 1 && index > 0){
+					GM_log("Comercio: comprobando: "+ciudad);
+					var ciudad_prohibida = 0;
+					for(i=0; i<ciudades_negadas.length; i++){
+						if(ciudades_negadas[i] == ciudad){
+							ciudad_prohibida = 1;
+							GM_log("Comercio: No se envia desde "+ ciudades_negadas[i]);
+						}
+					}
+			
+					for(i=0; i<ciudades_enviadas.length; i++){
+						if(ciudades_enviadas[i] == ciudad){
+							ciudad_prohibida = 1;
+							GM_log("Comercio: Ya se ha enviado desde "+ ciudades_enviadas[i]);
+						}
+					}
+					
+					if(ciudad_prohibida == 0){
+						if($(this).find("td").eq(2).text().search(/[0-9]{1,2}/gim)!=-1){//Hay mercado
+							if($(this).find("td").eq(2).text().match(/[0-9]{1,2}/gim)[0]!="0"){//Hay mercaderes libres
+								var c_destino = new RegExp(GM_getValue(server+"_com_destino"),"gim");
+								if(ciudad.search(c_destino)==-1){//No es la ciudad destino
+									//var ciudades_enviadas = GM_getValue(server+"_com_citys_sent");
+									//ciudades_enviadas += ciudad+","
+									//GM_setValue(server+"_com_citys_sent", ciudades_enviadas);
+									GM_log("Comercio: Vamos a "+ ciudad);
+									salimos = 1;
+									location.href = "http://"+server+".hispaniaeljuego.com"+$(this).find("td").eq(3).children().attr('href');
+								}else{
+									GM_log("Comercio: "+ ciudad +" es la ciudad destino. Omitiendo");
+								}
+							}else{
+								GM_log("Comercio: "+ ciudad +" no tiene mercaderes libres");
+							}
+						}else{
+							GM_log("Comercio: "+ ciudad +" no tiene mercado");
+						}
+					}
+				}
+			});
+			if(salimos == 0){
+				GM_log("Comercio: Envios realizados");
+				GM_setValue(server+"_com_checking", "0");
+				GM_setValue(server+"_com_citys_sent", ",");
+				
+				
+				GM_log("Comercio: Reseteando cuenta atras");
+				var cuenta_atras_ori = GM_getValue(server+"_com_tiempo_ori");
+				GM_setValue(server+"_com_tiempo", cuenta_atras_ori);
+				GM_log("Comercio: Ejecutamos cuenta atras");
+				$('#sidebar_content').append("<div id='cuenta_atras'></div>");
+				window.setInterval(comercio_tiempo, 1000);
+			}
+			//setTimeout("location.reload(false);",GM_getValue(server+"_com_tiempo"));
+		}
+}
+//comercio_check();
+
+function comercio(){
+	//insertamos el div
+	$('body').after("<div id='comercio' style='position:fixed;top:50px;background-color:white;padding:10px;'><h1 style='text-align:center;'><i>Triforce: Automatizacion Comercio</i></h1></div>");
+	$('#comercio').append("<table  style='border-spacing:10px;font-size:18px;'><tr><td class='izquierda'></td><td class='derecha'></td></tr></table>");
+	
+	//oscurecemos la pantalla
+	$('body').fadeTo('slow', 0.2);
+	
+	//ciudad destino
+	$('td.izquierda').append("Escribe el nombre de la ciudad de destino:<br>");
+	$('td.izquierda').append("<input name='com_destino' type='text' value='"+GM_getValue(server+"_com_destino")+"' size='40'></input><br><br>");
+	
+	//tipo de recursos
+	$('td.izquierda').append("Elige los recursos a enviar:<br>");
+	$('td.izquierda').append("<input name='com_madera' type='checkbox' value='true'>Madera</input><br>");
+	$('td.izquierda').append("<input name='com_cereal' type='checkbox' value='true' checked>Cereal</input><br>");
+	$('td.izquierda').append("<input name='com_piedra' type='checkbox' value='true'>Piedra</input><br>");
+	$('td.izquierda').append("<input name='com_hierro' type='checkbox' value='true'>Hierro</input><br><br>");
+	
+	
+	//cantidad de cada recurso
+	$('td.izquierda').append("Cantidad de recurso a mandar (Ej: Maximo):<br>");
+	$('td.izquierda').append("<input name='com_maxrecur' type='text' value='Maximo' size='10'></input><br><br>");
+	
+	//tiempo
+	$('td.izquierda').append("<div id='tiempo'></div>");
+	$('td.izquierda #tiempo').append("Tiempo entre cada envio (min):<br>");
+	$('td.izquierda #tiempo').append("<input name='com_tiempo' type='text' value='60' size='10'></input><br><br>");
+	
+	//bot
+	$('td.derecha').append("¿Quieres envios automaticos o semi-automaticos?<br>");
+	$('td.derecha').append("<input name='com_tipo' type='radio' value='auto' checked='checked'>Auto</input>");
+	$('td.derecha').append("&nbsp;<input name='com_tipo' type='radio' value='semi'>Semi-Auto</input>");
+	$('td.derecha').append("&nbsp;<input name='com_tipo' type='radio' value='manual'>Manual</input><br><br>");
+	
+	var tipo_auto = GM_getValue(server+"_com_tipo");
+	$("input[name='com_tipo'][value='"+ tipo_auto +"']").attr("checked","checked");
+	
+	function comercio_cambiar_tipo(){
+		if($("input[name='com_tipo']:checked").val() == "auto"){
+			$('#comercio #ciudades').css("visibility","visible");
+			$('#comercio #tiempo').css("visibility","visible");
+		}else{
+			$('#comercio #tiempo').css("visibility","hidden");
+			$('#comercio #ciudades').css("visibility","hidden");
+		}
+	}
+	$("input[name='com_tipo']").click(function(){	comercio_cambiar_tipo();	});
+	window.setTimeout(function(){	comercio_cambiar_tipo()	},500);
+	
+	//ciudades desde donde enviar
+	$('td.derecha').append("<div id='ciudades'></div>");
+	$('td.derecha #ciudades').append("Marca los poblados desde donde desees enviar:<br>");
+	ciudades=new Array();
+	$('#cities').find('option').each(function(index){
+		ciudades[index]=$(this).attr('label').replace(/ \([0-9]{1,3},[0-9]{1,3}\)/gim,"");
+		$('td.derecha #ciudades').append("<input class='com_ciudades' name='comercio_"+index+"' type='checkbox' value='true' checked>"+$(this).attr('label')+"</input><br>");
+		
+	});
+		
+	left=$('body').css('width').match(/[0-9]{1,}/gim)[0]/2-$('#comercio').css('width').match(/[0-9]{1,}/gim)[0]/2;
+	$('#comercio').css({"left":left});
+	
+	//Aceptar
+	$('#comercio').append("<br><a id='comercio_ok' style='text-decoration:underline;cursor:pointer;'>Activar funcion</a>");
+	$('#comercio_ok').click(function(){
+		$(this).parent().hide();
+		var error = 0;
+		var error_tipo = "";
+		var destino = $("input[name='com_destino']").val();
+		var tipo = $("input[name='com_tipo']:checked").val();
+		var max_recurso = $("input[name='com_maxrecur']").val();
+		var tiempo = $("input[name='com_tiempo']").val();
+		
+		//destino
+		if(tipo != "manual"){
+			if(destino.search(/^[A-Z0-9\-_ áéíóúÁÉÍÓÚ]{2,}$/gim) == -1){
+				var error = 1;
+				error_tipo += "Ciudad destino, ";
+			}
+		}
+		GM_setValue(server+"_com_destino", destino);
+		
+		//tipo automatizacion
+		GM_setValue(server+"_com_tipo", tipo);
+		
+		//max recursos
+		GM_setValue(server+"_com_maxrecur", max_recurso);
+		if(max_recurso.search(/^(Maximo|[0-9]{1,})$/gim) == -1){
+				var error = 1;
+				error_tipo += "Cantidad recurso a enviar, ";
+		}
+		
+		//tiempo
+		if(tipo == "auto"){
+			if(tiempo.search(/^[0-9]{1,}$/gim) == -1 || tiempo == 0){
+				var error = 1;
+				error_tipo += "Tiempo entre los envios, ";
+			}
+		}
+		GM_setValue(server+"_com_tiempo", tiempo * 60);
+		GM_setValue(server+"_com_tiempo_ori", tiempo * 60);
+		
+		//recursos
+		recursos="";
+		if($("input[name='com_madera']:checked").length>0){recursos+="madera,";}
+		if($("input[name='com_cereal']:checked").length>0){recursos+="cereal,";}
+		if($("input[name='com_piedra']:checked").length>0){recursos+="piedra,";}
+		if($("input[name='com_hierro']:checked").length>0){recursos+="hierro,";}
+		GM_setValue(server+"_com_recursos", recursos.substring(0,recursos.length-1));
+		
+		if(tipo == "auto"){
+			if(recursos.length < 3){
+				var error = 1;
+				error_tipo += "Tipos de recursos, ";
+			}
+		}
+		//alert(recursos.length);
+		//ciudades
+		ciudades="";
+		for(i=0;i<$('#cities').find('option').length;i++){
+			if($("input[name='comercio_"+i+"']:checked").length==0){
+				ciudades+=$('#cities').find('option').eq(i).attr('label').replace(/ \([0-9]{1,3},[0-9]{1,3}\)/gim,"")+",";
+			}
+		}
+		GM_setValue(server+"_com_ciudades", ciudades.substring(0,ciudades.length-1));
+		
+		if(error == 1){
+			alert("Las siguientes opciones no son correctas: "+ error_tipo);
+			$("#comercio").remove();
+			comercio();
+		}else{
+			GM_log("Comercio: Activando funcion");	
+			GM_setValue(server+"_com_citys_sent", "");
+			$('body').fadeTo('slow', 1);
+			$("#comercio").remove();
+			GM_setValue(server+"_comercio", "1");
+			if(GM_getValue(server+"_com_tipo") != "manual"){
+				comercio_check();	
+			}		
+		}
+	});
+	
+	//Cancelar
+	$('#comercio').append("<a id='comercio_ko' style='float:right;text-decoration:underline;cursor:pointer;'>Desactivar funcion</a>");
+	$('#comercio_ko').click(function(){
+		$('body').fadeTo('slow', 1);
+		$("#comercio").remove();
+		GM_setValue(server+"_comercio", "0");
+		GM_setValue(server+"_com_tipo", "0");
+		location.reload(false);
+	});
+}
+//comercio();
+
+
+//Mercados
+if(document.location.href=="http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/"){
+	$(document).ready(function(){
+		if(GM_getValue(server+"_comercio") == 0 || GM_getValue(server+"_com_tipo") == "manual"){
+			//Si no esta activado
+			
+			$('div.GA_MOD_HEADER').hide();
+			GM_xmlhttpRequest({ //Informes cereal
+				method: "GET",
+				url: "http://"+server+".hispaniaeljuego.com/game/counselors/construction/production/",
+				synchronous: "false",
+				onload: function(response) {
+					temp=$(response.responseText).find("td[style='text-align:center']");
+					almacenado=new Array();
+					produccion=new Array();
+					i2=1;
+					//seleccionamos produccion y almacenado
+					for(i=6;i<temp.length;i++){
+						produccion[i2]=temp[i].innerHTML;
+						i++;
+						almacenado[i2]=temp[i].innerHTML;
+						i=i+13;
+						//alert(produccion[i2]);
+						i2++;
+					}
+					//insertamos produccion y almacenado en cada mercado
+					$('div.kk').find('table.rk').find('tr').each(function(index, value){
+						if(index==0){
+							$(this).append("<td  style='text-align:right !important;'><b>Produccion</b></td>");
+							$(this).append("<td  style='text-align:right !important;'><b>Almacenado</b></td>");
+						}else{
+							$(this).append("<td  style='text-align:right !important;'>"+produccion[index]+"</td>");
+							$(this).append("<td  class='almacenado' style='text-align:right;'>"+almacenado[index]+"</td>");
+						}
+					});
+				}
+			});
+		}
+	});
+}
+
+
+//Mercado: Pestaña: Resumen
+var patron = /.hispaniaeljuego\.com\/game\/region\/building\/[0-9]{1,}\/market\/$/;
+if(document.location.href.search(patron) != -1){
+	$(document).ready(function(){
+		if(GM_getValue(server+"_comercio") == 1 && GM_getValue(server+"_com_checking") == 1){
+				
+			var ciudad_prohibida = 0;
+			var ciudades_enviadas = GM_getValue(server+"_com_citys_sent").split(",");
+			
+			for(i=0; i<ciudades_enviadas.length; i++){
+				if(ciudades_enviadas[i] == city_actual()){
+					ciudad_prohibida = 1;
+					GM_log("Comercio: Volviendo al mercado desde "+ ciudades_enviadas[i]);
+					location.href="http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/";
+				}
+			}
+			
+			if(ciudad_prohibida == 0){
+				var url = document.location.href;
+				url = url.replace("market","send");
+				location.href = url;
+				GM_log("Comercio: Vamos al formulario de "+ city_actual());
+			}
+		}
+	});
+}
+
+
+//Mercado: Pestaña: Enviar recursos
+var patron = /hispaniaeljuego\.com\/game\/region\/building\/[0-9]{1,}\/send\//;
+if(document.location.href.search(patron) != -1 && GM_getValue(server+"_comercio") == 1 && document.getElementsByTagName("body")[0].innerHTML.search("No tienes mercaderes libres") == -1){
+	$(document).ready(function(){
+		if(GM_getValue(server+"_com_checking") == 1 || GM_getValue(server+"_com_tipo") == "manual"){
+			$("#id_city").val(GM_getValue(server+"_com_destino"));
+			
+			var capacidad=document.getElementsByTagName("body")[0].innerHTML.match(/<td>\s+[0-9]{1,}<\/td>/i);
+			var capacidad=capacidad[0].replace(/<td> /,"");	var capacidad=capacidad.replace(/<\/td>/,"");
+			var material=GM_getValue(server+"_com_recursos");
+			var materiales=material.split(",");
+			var capacidad=parseInt(capacidad)/parseInt(materiales.length);
+			capacidad=parseInt(capacidad.toString().match(/[0-9]{1,}/gim).join("-"));
+			
+			if(capacidad!="Maximo" && capacidad>GM_getValue(server+"_com_maxrecur")){
+				capacidad=GM_getValue(server+"_com_maxrecur");
+			}
+			
+			for(i=0;i<4;i++){
+				if(materiales[i]=="madera"){
+					document.getElementById("id_r_1").value=capacidad;
+					if(parseInt($("#res_1").text().replace(/\./gim,""))<capacidad){
+						document.getElementById("id_r_1").value=$("#res_1").text().replace(/\./gim,"");
+					}
+				}
+			}
+			for(i=0;i<4;i++){
+				if(materiales[i]=="cereal"){
+					document.getElementById("id_r_2").value=capacidad;
+					if(parseInt($("#res_2").text().replace(/\./gim,""))<capacidad){
+						document.getElementById("id_r_2").value=$("#res_2").text().replace(/\./gim,"");
+					}
+				}
+			}
+			for(i=0;i<4;i++){
+				if(materiales[i]=="piedra"){
+					document.getElementById("id_r_3").value=capacidad;
+					if(parseInt($("#res_3").text().replace(/\./gim,""))<capacidad){
+						document.getElementById("id_r_3").value=$("#res_3").text().replace(/\./gim,"");
+					}
+				}
+			}
+			for(i=0;i<4;i++){
+				if(materiales[i]=="hierro"){
+					document.getElementById("id_r_4").value=capacidad;
+					if(parseInt($("#res_4").text().replace(/\./gim,""))<capacidad){
+						document.getElementById("id_r_4").value=$("#res_4").text().replace(/\./gim,"");
+					}
+				}
+			}
+		}		
+		
+		//DETECCION DE FALLO AL ENVIAR
+		if($('ul.errorlist').children().text()=="La ciudad seleccionada no existe"){
+			GM_log("error 100");
+			alert("La ciudad no existe, escribe el nombre correctamente o pulsa el boton cancelar en la siguiente ventana para cancelar la funcion");
+			comercio_activar();
+		}else if($('div.kk').text().search(/No tienes mercaderes libres|No puedes seleccionar tu ciudad/gim)!=-1){
+			GM_log("error 101");
+			location.href="http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/";
+		}else if($('ul.errorlist').length>0 || $('dik.kk').find('span.KO').length>0){
+			GM_log("error 102");
+			location.href="http://"+server+".hispaniaeljuego.com/game/counselors/commerce/markets/";
+		}else if(GM_getValue(server+"_com_destino")!=""){
+			if(GM_getValue(server+"_comercio") == 1 && GM_getValue(server+"_com_tipo") != "manual" && GM_getValue(server+"_com_checking") == 1){
+				var ciudades_enviadas = GM_getValue(server+"_com_citys_sent");
+				ciudades_enviadas += city_actual()+","
+				GM_setValue(server+"_com_citys_sent", ciudades_enviadas);
+				
+				GM_log("Comercio: Enviando formulario de "+ city_actual());
+				$("form[name='c']").submit();
+			}
+		}
+	});
+}
+
+$(document).ready(function(){	
+	if(GM_getValue(server+"_com_tipo") == "auto" && GM_getValue(server+"_com_checking") == 1){
+		var patron1 = /.hispaniaeljuego\.com\/game\/region\/building\/[0-9]{1,}\/market\/$/;
+		var patron2 = /hispaniaeljuego\.com\/game\/region\/building\/[0-9]{1,}\/send\//;
+		if(location.href.search(patron1) == -1 && location.href.search(patron2) == -1){
+			GM_log("Comercio: Seguimos con los envios");
+			comercio_check();
+		}
+	}else if(GM_getValue(server+"_comercio") == "1" && GM_getValue(server+"_com_tipo") == "auto"){
+		$('#sidebar_content').append("<div id='cuenta_atras'></div>");
+		window.setInterval(comercio_tiempo, 1000);
+		GM_log("Comercio: Ejecutamos cuenta atras");
+	}
+});
+
+
+
+GM_log("##### EJECUCION REALIZADA #####");
